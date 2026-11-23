@@ -58,6 +58,10 @@
   padding: 1rem 1.2rem; text-align: center;
 }
 .sg-process:disabled { opacity: .45; cursor: not-allowed; }
+.sg-process-note {
+  font-family: "VT323", monospace; font-size: 1.15rem; color: var(--muted);
+  text-align: center; max-width: 560px; margin: -.9rem auto 1.4rem;
+}
 
 .sg-progress-wrap { margin: 1.2rem 0; }
 .sg-progress-text { font-family: "VT323", monospace; font-size: 1.3rem; color: #fff; margin: 0 0 .45rem; }
