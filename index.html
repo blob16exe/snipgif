@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SnipGIF — free GIF background remover, runs in your browser | Blob</title>
+<meta name="description" content="Drop a GIF, animated WebP or short MP4 and get the character back with the background cut clean: transparent PNG sequence or alpha WebM. 100% in your browser — no uploads, no watermark, no sign-up.">
+<link rel="canonical" href="https://blob.blob16exe.workers.dev/snipgif/">
+<meta property="og:title" content="SnipGIF — free GIF background remover">
+<meta property="og:description" content="Cut the background out of a GIF right in your browser. No uploads, no watermark, no sign-up.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://blob.blob16exe.workers.dev/snipgif/">
+<link rel="stylesheet" href="https://blob.blob16exe.workers.dev/assets/css/style.css">
+<link rel="stylesheet" href="https://blob.blob16exe.workers.dev/assets/css/site.css">
+<link rel="stylesheet" href="./snipgif.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "SnipGIF",
+  "applicationCategory": "MultimediaApplication",
+  "operatingSystem": "Any (web browser)",
+  "description": "Free GIF background remover that runs 100% in the browser: drop a GIF, animated WebP or short MP4 and export a transparent PNG sequence or alpha WebM. No uploads, no watermark, no sign-up.",
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+  "author": { "@type": "Organization", "name": "Blob", "url": "https://blob.blob16exe.workers.dev/" }
+}
+</script>
+
+<link rel="icon" type="image/png" href="https://blob.blob16exe.workers.dev/assets/img/cleantake-logo-64.png">
+<meta property="og:image" content="https://blob.blob16exe.workers.dev/assets/img/snipgif-after.png">
+</head>
+<body>
+<nav class="nav"><div class="nav-inner">
+  <a class="brand brand-pixel" href="https://blob.blob16exe.workers.dev/">BLOB.</a>
+  <div class="nav-links">
+    <a href="https://blob.blob16exe.workers.dev/">Home</a>
+    <a href="https://blob.blob16exe.workers.dev/blog/">Blog</a>
+    <a href="https://blob.blob16exe.workers.dev/agents/">Agents</a>
+    <div class="nav-dropdown">
+      <button type="button" class="nav-drop-btn" aria-haspopup="true" aria-expanded="false">Projects <span class="nav-arrow" aria-hidden="true">&#9662;</span></button>
+      <div class="nav-drop-panel" hidden>
+        <a href="https://blob.blob16exe.workers.dev/snipgif/">SnipGIF <span class="drop-tag tag-main">MAIN</span></a>
+        <a href="https://blob.blob16exe.workers.dev/cleantake/">CleanTake <span class="drop-tag tag-free">FREE</span></a>
+      </div>
+    </div>
+    <a href="https://blob.blob16exe.workers.dev/about/">About</a>
+    <a class="btn btn-youtube" style="padding:.45rem 1rem" href="https://www.youtube.com/@blob16exe">YouTube</a>
+  </div>
+</div></nav>
+
+<main class="wrap">
+<p class="breadcrumb"><a href="https://blob.blob16exe.workers.dev/">home</a> / snipgif</p>
+
+<section class="sg-hero">
+  <h1 class="sg-title">SNIPGIF</h1>
+  <p class="sg-tagline">GIF BACKGROUND REMOVER — FREE, IN YOUR BROWSER</p>
+</section>
+
+<div id="dropzone" class="sg-drop" tabindex="0" role="button" aria-label="Drop a GIF, animated WebP or MP4 file here, or press Enter to browse">
+  <p class="sg-drop-big">DROP GIF / WEBP / MP4 HERE</p>
+  <p class="sg-drop-sub">or click to browse — max ~15 seconds</p>
+  <p class="sg-drop-note">Your file never leaves your device.</p>
+  <input type="file" id="file-input" accept="image/gif,image/webp,video/mp4,.gif,.webp,.mp4" hidden>
+</div>
+<p id="file-info" class="sg-fileinfo" hidden></p>
+<p id="error-box" class="sg-error" role="alert" hidden></p>
+
+<div class="sg-controls">
+  <label class="sg-field">MODE:
+    <select id="mode-select" class="sg-select">
+      <option value="auto" selected>AUTO</option>
+      <option value="u2net">PERSON + PROPS</option>
+      <option value="isnet">DARK SCENE</option>
+    </select>
+  </label>
+  <div class="sg-field" role="radiogroup" aria-label="Preferred output format">OUTPUT:
+    <button type="button" class="sg-chip sg-chip-on" id="chip-png" role="radio" aria-checked="true">PNG SEQUENCE</button>
+    <button type="button" class="sg-chip" id="chip-webm" role="radio" aria-checked="false">WEBM ALPHA</button>
+  </div>
+  <label class="sg-field">PREVIEW:
+    <select id="preview-select" class="sg-select">
+      <option value="black" selected>BLACK</option>
+      <option value="checker">CHECKER</option>
+    </select>
+  </label>
+</div>
+
+<button type="button" id="process-btn" class="btn btn-primary sg-process" disabled>REMOVE BACKGROUND</button>
+
+<div id="progress-wrap" class="sg-progress-wrap" hidden>
+  <p id="progress-text" class="sg-progress-text">Processing... frame 0 / 0</p>
+  <div class="sg-progress"><div id="progress-bar" class="sg-progress-bar"></div></div>
+  <p id="model-status" class="sg-model-status"></p>
+</div>
+
+<div id="preview-wrap" class="sg-preview" hidden>
+  <div class="sg-panel">
+    <p class="sg-panel-label">BEFORE</p>
+    <div class="sg-frame-box"><canvas id="before-canvas" width="320" height="240"></canvas></div>
+  </div>
+  <div class="sg-panel">
+    <p class="sg-panel-label sg-label-after">AFTER — TRANSPARENT (SHOWN ON BLACK)</p>
+    <div class="sg-frame-box sg-after-box" id="after-box"><canvas id="after-canvas" width="320" height="240"></canvas></div>
+  </div>
+</div>
+<p id="playback-row" class="sg-playback" hidden>
+  <button type="button" id="playpause-btn" class="sg-chip">&#10073;&#10073; PAUSE PREVIEW</button>
+  <span id="frame-readout" class="sg-frame-readout"></span>
+</p>
+
+<div id="download-row" class="sg-downloads" hidden>
+  <button type="button" id="download-png" class="btn btn-ghost">DOWNLOAD PNG SEQUENCE (.ZIP)</button>
+  <button type="button" id="download-webm" class="btn btn-ghost">DOWNLOAD WEBM (ALPHA)</button>
+  <p id="webm-note" class="sg-note" hidden>WebM alpha export needs a browser with WebCodecs VP9-alpha encoding (recent Chrome works). The PNG sequence works in every browser and every editor.</p>
+  <p id="download-status" class="sg-note"></p>
+</div>
+
+<section class="card sg-story" id="story">
+  <h3 style="margin-top:0">The story</h3>
+  <p>SnipGIF exists because this channel's videos needed characters with their backgrounds cut clean — every cutout character in our Shorts comes from this page. The big hosted removers cap free clips at a few seconds, stamp a watermark, and only let you do one clip at a time. SnipGIF runs the same open-source AI models they use — u2net and ISNet, the models behind the open-source rembg project — entirely in your browser instead: no upload, no watermark, no account, and the mode picker lets you force the model that keeps props in hands or handles dark scenes.</p>
+</section>
+
+<p class="sg-footnotes">
+  Runs 100% in your browser — no uploads · no watermark · no sign-up<br>
+  Best on desktop — phones work, just slower.
+</p>
+</main>
+
+<footer><div class="wrap">
+  <a href="https://blob.blob16exe.workers.dev/privacy/">Privacy</a><a href="https://blob.blob16exe.workers.dev/docs/limits/">Limits</a><a href="https://blob.blob16exe.workers.dev/changelog/">Changelog</a>
+  <a href="https://x.com/blob16exe" data-event="outbound_github_click" data-event-detail='{"dest":"x"}'>X @blob16exe</a>
+  <span class="spacer">Blob, built in ESP32</span>
+</div></footer>
+<script src="https://blob.blob16exe.workers.dev/assets/js/main.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+<script type="module" src="./snipgif.js"></script>
+</body>
+</html>

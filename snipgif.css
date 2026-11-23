@@ -1,0 +1,109 @@
+/* The hidden attribute must win over the flex/grid displays below. */
+#progress-wrap[hidden], #preview-wrap[hidden], #playback-row[hidden],
+#download-row[hidden] { display: none; }
+
+/* SnipGIF tool page — layout per approved mockup 2026-11-22, colors from the
+   site pixel theme (navy surfaces, green accents). VT323 drives the tool UI
+   labels, Press Start 2P the title and the big action button. */
+
+.sg-hero { text-align: center; padding: 2.2rem 0 1.2rem; }
+.sg-title {
+  font-family: "Press Start 2P", monospace; font-size: 2rem; line-height: 1.5;
+  color: #fff; margin: 0 0 1rem;
+}
+.sg-tagline { font-family: "VT323", monospace; font-size: 1.55rem; color: #4fe3a5; margin: 0; }
+
+.sg-drop {
+  border: 2px dashed #2ee06f; border-radius: 10px; background: #0d1433;
+  text-align: center; padding: 2.4rem 1.2rem; margin: 1.4rem 0 .6rem;
+  cursor: pointer; outline: none;
+}
+.sg-drop:hover, .sg-drop:focus-visible, .sg-drop.sg-dragging { background: #101736; border-color: #4fe3a5; }
+.sg-drop-big { font-family: "VT323", monospace; font-size: 1.9rem; color: #fff; margin: 0 0 .3rem; }
+.sg-drop-sub { font-family: "VT323", monospace; font-size: 1.25rem; color: var(--muted); margin: 0 0 .3rem; }
+.sg-drop-note { font-family: "VT323", monospace; font-size: 1.25rem; color: #2ee06f; margin: 0; }
+
+.sg-fileinfo { font-family: "VT323", monospace; font-size: 1.2rem; color: var(--text); margin: .4rem 0; }
+.sg-error {
+  font-family: "VT323", monospace; font-size: 1.2rem; color: #ff8f86;
+  border: 1px solid #d96a5f; border-radius: 8px; background: #2a1414;
+  padding: .6rem .9rem; margin: .6rem 0;
+}
+
+.sg-controls {
+  display: flex; flex-wrap: wrap; gap: 1rem 1.6rem; align-items: center;
+  margin: 1.2rem 0;
+}
+.sg-field {
+  font-family: "VT323", monospace; font-size: 1.3rem; color: #fff;
+  display: inline-flex; align-items: center; gap: .55rem;
+}
+.sg-select {
+  font-family: "VT323", monospace; font-size: 1.2rem;
+  background: #0d1433; color: #fff; border: 1px solid #263069;
+  border-radius: 6px; padding: .25rem .5rem;
+}
+.sg-select:focus { outline: none; border-color: #2ee06f; }
+.sg-chip {
+  font-family: "VT323", monospace; font-size: 1.15rem; cursor: pointer;
+  background: #0d1433; color: var(--muted); border: 1px solid #263069;
+  border-radius: 6px; padding: .3rem .7rem;
+}
+.sg-chip:hover { color: #fff; }
+.sg-chip-on { color: #2ee06f; border-color: #2ee06f; }
+
+.sg-process {
+  font-family: "Press Start 2P", monospace; font-size: .8rem; line-height: 1.6;
+  display: block; width: min(520px, 100%); margin: 1.4rem auto;
+  padding: 1rem 1.2rem; text-align: center;
+}
+.sg-process:disabled { opacity: .45; cursor: not-allowed; }
+
+.sg-progress-wrap { margin: 1.2rem 0; }
+.sg-progress-text { font-family: "VT323", monospace; font-size: 1.3rem; color: #fff; margin: 0 0 .45rem; }
+.sg-progress {
+  height: 20px; border: 1px solid #263069; border-radius: 4px;
+  background: #0d1433; overflow: hidden;
+}
+.sg-progress-bar {
+  height: 100%; width: 0%;
+  background: repeating-linear-gradient(90deg, #2ee06f 0 14px, #0d1433 14px, #0d1433 18px);
+  transition: width .2s;
+}
+.sg-model-status { font-family: "VT323", monospace; font-size: 1.15rem; color: var(--muted); margin: .45rem 0 0; }
+
+.sg-preview {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 1.2rem; margin: 1.4rem 0 .4rem;
+}
+.sg-panel-label { font-family: "VT323", monospace; font-size: 1.25rem; color: var(--muted); margin: 0 0 .5rem; }
+.sg-label-after { color: #4fe3a5; }
+.sg-frame-box {
+  border: 1px solid #263069; border-radius: 8px; background: #0d1433;
+  display: flex; align-items: center; justify-content: center;
+  min-height: 180px; overflow: hidden;
+}
+.sg-frame-box canvas { max-width: 100%; height: auto; display: block; }
+.sg-after-box { background: #000; }
+.sg-after-box.sg-checker {
+  background: repeating-conic-gradient(#3a3f4d 0% 25%, #141821 0% 50%) 0 0 / 24px 24px;
+}
+.sg-playback { display: flex; align-items: center; gap: 1rem; margin: .4rem 0 0; }
+.sg-frame-readout { font-family: "VT323", monospace; font-size: 1.15rem; color: var(--muted); }
+
+.sg-downloads { display: flex; flex-wrap: wrap; gap: .9rem; margin: 1.4rem 0; align-items: center; }
+.sg-downloads .btn { font-family: "VT323", monospace; font-size: 1.25rem; }
+.sg-downloads .btn.sg-primary-choice { border-color: #2ee06f; color: #2ee06f; }
+.sg-note { font-family: "VT323", monospace; font-size: 1.15rem; color: var(--muted); flex: 1 1 100%; margin: .2rem 0 0; }
+
+.sg-story { margin-top: 2.2rem; }
+.sg-footnotes {
+  text-align: center; font-family: "VT323", monospace; font-size: 1.25rem;
+  color: var(--muted); line-height: 1.5; margin: 2.4rem 0 0;
+}
+
+@media (max-width: 700px) {
+  .sg-title { font-size: 1.3rem; }
+  .sg-tagline { font-size: 1.3rem; }
+  .sg-preview { grid-template-columns: 1fr; }
+  .sg-process { font-size: .65rem; }
+}
