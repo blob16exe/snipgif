@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>SnipGIF — free GIF background remover, runs in your browser | Blob</title>
-<meta name="description" content="Drop a GIF, animated WebP or short MP4 and get the character back with the background cut clean: transparent PNG sequence or alpha WebM. 100% in your browser — no uploads, no watermark, no sign-up.">
+<meta name="description" content="Drop a GIF, animated WebP or short MP4 and get the character back with the background cut clean: transparent GIF, PNG sequence or alpha WebM. Batch several files at once and bake in a sticker effect. 100% in your browser — no uploads, no watermark, no sign-up.">
 <link rel="canonical" href="https://blob.blob16exe.workers.dev/snipgif/">
 <meta property="og:title" content="SnipGIF — free GIF background remover">
 <meta property="og:description" content="Cut the background out of a GIF right in your browser. No uploads, no watermark, no sign-up.">
@@ -23,13 +23,13 @@
   "name": "SnipGIF",
   "applicationCategory": "MultimediaApplication",
   "operatingSystem": "Any (web browser)",
-  "description": "Free GIF background remover that runs 100% in the browser: drop a GIF, animated WebP or short MP4 and export a transparent PNG sequence or alpha WebM. No uploads, no watermark, no sign-up.",
+  "description": "Free GIF background remover that runs 100% in the browser: drop a GIF, animated WebP or short MP4 — or batch several at once — and export a transparent GIF, PNG sequence or alpha WebM, with an optional sticker effect baked in. No uploads, no watermark, no sign-up.",
   "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
   "author": { "@type": "Organization", "name": "Blob", "url": "https://blob.blob16exe.workers.dev/" }
 }
 </script>
 
-<link rel="icon" type="image/png" href="https://blob.blob16exe.workers.dev/assets/img/cleantake-logo-64.png">
+<link rel="icon" type="image/png" href="https://blob.blob16exe.workers.dev/assets/img/blob-logo-64.png">
 <meta property="og:image" content="https://blob.blob16exe.workers.dev/assets/img/snipgif-after.png">
 </head>
 <body>
@@ -60,13 +60,18 @@
 </section>
 
 <div id="dropzone" class="sg-drop" tabindex="0" role="button" aria-label="Drop a GIF, animated WebP or MP4 file here, or press Enter to browse">
-  <p class="sg-drop-big">DROP GIF / WEBP / MP4 HERE</p>
-  <p class="sg-drop-sub">or click to browse — max ~15 seconds</p>
-  <p class="sg-drop-note">Your file never leaves your device.</p>
-  <input type="file" id="file-input" accept="image/gif,image/webp,video/mp4,.gif,.webp,.mp4" hidden>
+  <p class="sg-drop-big">DROP GIF / WEBP / MP4 HERE — ONE OR MANY</p>
+  <p class="sg-drop-sub">or click to browse — add as many files as you like, max ~15 seconds each</p>
+  <p class="sg-drop-note">Your files never leave your device.</p>
+  <input type="file" id="file-input" accept="image/gif,image/webp,video/mp4,.gif,.webp,.mp4" multiple hidden>
 </div>
 <p id="file-info" class="sg-fileinfo" hidden></p>
 <p id="error-box" class="sg-error" role="alert" hidden></p>
+
+<div id="queue-wrap" class="sg-queue" hidden>
+  <div class="sg-queue-head"><span>BATCH QUEUE</span><span id="queue-summary" class="sg-queue-summary"></span></div>
+  <div id="queue-rows"></div>
+</div>
 
 <div class="sg-controls">
   <label class="sg-field">MODE:
@@ -77,19 +82,35 @@
     </select>
   </label>
   <div class="sg-field" role="radiogroup" aria-label="Preferred output format">OUTPUT:
-    <button type="button" class="sg-chip sg-chip-on" id="chip-png" role="radio" aria-checked="true">PNG SEQUENCE</button>
+    <button type="button" class="sg-chip" id="chip-png" role="radio" aria-checked="false">PNG SEQUENCE</button>
     <button type="button" class="sg-chip" id="chip-webm" role="radio" aria-checked="false">WEBM ALPHA</button>
+    <button type="button" class="sg-chip sg-chip-on" id="chip-gif" role="radio" aria-checked="true">GIF (TRANSPARENT)</button>
   </div>
   <label class="sg-field">PREVIEW:
     <select id="preview-select" class="sg-select">
-      <option value="black" selected>BLACK</option>
-      <option value="checker">CHECKER</option>
+      <option value="checker" selected>CHECKER</option>
+      <option value="black">BLACK</option>
     </select>
   </label>
 </div>
 
+<div class="sg-fx">
+  <div class="sg-fx-row" role="radiogroup" aria-label="Sticker effect">
+    <span class="sg-field">STICKER EFFECT:</span>
+    <button type="button" class="sg-chip sg-chip-on" id="fx-none" role="radio" aria-checked="true">NONE</button>
+    <button type="button" class="sg-chip" id="fx-wobble" role="radio" aria-checked="false">WOBBLE</button>
+    <button type="button" class="sg-chip" id="fx-shake" role="radio" aria-checked="false">SHAKE</button>
+    <button type="button" class="sg-chip" id="fx-bounce" role="radio" aria-checked="false">BOUNCE</button>
+    <span class="sg-field">INTENSITY:
+      <input type="range" id="fx-intensity" class="sg-slider" min="1" max="10" step="1" value="5" aria-label="Effect intensity">
+      <span id="fx-intensity-val" class="sg-fx-val">5</span>
+    </span>
+  </div>
+  <p class="sg-fx-note">The effect is baked into the export. The preview below plays with the effect on — what you see is exactly what exports, in GIF, WebM and PNG sequence.</p>
+</div>
+
 <button type="button" id="process-btn" class="btn btn-primary sg-process" disabled>REMOVE BACKGROUND</button>
-<p class="sg-process-note">First run downloads a ~176 MB AI model — one time only, then it stays cached in your browser. DARK SCENE mode (ISNet) runs much slower than the others.</p>
+<p class="sg-process-note">First run downloads a ~176 MB AI model — one time only, then it stays cached in your browser. DARK SCENE mode (ISNet) runs much slower than the others. Queued files share a single model load, so a batch does not pay the download per file.</p>
 
 <div id="progress-wrap" class="sg-progress-wrap" hidden>
   <p id="progress-text" class="sg-progress-text">Processing... frame 0 / 0</p>
@@ -103,8 +124,8 @@
     <div class="sg-frame-box"><canvas id="before-canvas" width="320" height="240"></canvas></div>
   </div>
   <div class="sg-panel">
-    <p class="sg-panel-label sg-label-after">AFTER — TRANSPARENT (SHOWN ON BLACK)</p>
-    <div class="sg-frame-box sg-after-box" id="after-box"><canvas id="after-canvas" width="320" height="240"></canvas></div>
+    <p class="sg-panel-label sg-label-after">AFTER — TRANSPARENT (ON CHECKERBOARD)</p>
+    <div class="sg-frame-box sg-after-box sg-checker" id="after-box"><canvas id="after-canvas" width="320" height="240"></canvas></div>
   </div>
 </div>
 <p id="playback-row" class="sg-playback" hidden>
@@ -113,11 +134,27 @@
 </p>
 
 <div id="download-row" class="sg-downloads" hidden>
+  <button type="button" id="download-gif" class="btn btn-ghost">DOWNLOAD GIF (TRANSPARENT)</button>
   <button type="button" id="download-png" class="btn btn-ghost">DOWNLOAD PNG SEQUENCE (.ZIP)</button>
   <button type="button" id="download-webm" class="btn btn-ghost">DOWNLOAD WEBM (ALPHA)</button>
+  <button type="button" id="download-all" class="btn btn-ghost" hidden>DOWNLOAD ALL (.ZIP)</button>
+  <p id="gif-note" class="sg-note">Heads-up: GIF transparency is 1-bit, so cut edges look slightly harder than in PNG/WebM. For video overlays the WebM or PNG sequence stays cleaner.</p>
   <p id="webm-note" class="sg-note" hidden>WebM alpha export needs a browser with WebCodecs VP9-alpha encoding (recent Chrome works). The PNG sequence works in every browser and every editor.</p>
+  <p class="sg-note">Batch downloads pack every finished file into one .zip, each in its own folder, in the format picked by the OUTPUT chips above, with the sticker effect already applied.</p>
   <p id="download-status" class="sg-note"></p>
 </div>
+
+<section class="card sg-story" id="how-to">
+  <h3 style="margin-top:0">How to use</h3>
+  <ol class="sg-howto">
+    <li><strong>Drop your files.</strong> Drag in a GIF, animated WebP or short MP4 — or several at once to batch them (up to 5 files, ~15 seconds each). They appear in the batch queue; a file that cannot be read is flagged there and the rest still process. Nothing is uploaded: everything runs on your device.</li>
+    <li><strong>Pick a mode.</strong> AUTO chooses the model for you. PERSON + PROPS keeps objects held in hands; DARK SCENE handles dark footage but runs much slower.</li>
+    <li><strong>Optional: add a sticker effect.</strong> WOBBLE, SHAKE or BOUNCE, with an intensity slider. The preview plays with the effect on, and the effect is baked into every export — what you see is exactly what you download.</li>
+    <li><strong>Hit REMOVE BACKGROUND.</strong> The first run downloads the AI model once (~176 MB) and keeps it cached in your browser; a whole batch shares that single download. Then each file is cut frame by frame on your own machine.</li>
+    <li><strong>Check the cut.</strong> The AFTER panel shows the character on a checkerboard — the classic transparency backdrop — so you can see exactly what is see-through. Prefer the old view? Switch PREVIEW to BLACK.</li>
+    <li><strong>Download.</strong> Take a transparent GIF (drops straight into chats, pages and most editors), a PNG sequence (cleanest edges, works everywhere), or an alpha WebM (smallest file, best for video overlays). With two or more finished files, DOWNLOAD ALL packs them into one .zip, each in its own folder.</li>
+  </ol>
+</section>
 
 <section class="card sg-story" id="story">
   <h3 style="margin-top:0">The story</h3>

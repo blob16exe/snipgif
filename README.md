@@ -2,7 +2,10 @@
 
 Drop a GIF, an animated WebP or a short MP4 (up to ~15 seconds) and get your
 character back with the background cut clean — frame by frame, like a
-rotoscope. Export a transparent PNG sequence (`.zip`) or an alpha WebM.
+rotoscope. Export a transparent GIF, a transparent PNG sequence (`.zip`) or
+an alpha WebM. Queue up to 5 files as a batch (one model download for all
+of them, one `.zip` back), and optionally bake in a sticker effect —
+wobble, shake or bounce — before you export.
 
 **Live version: https://blob.blob16exe.workers.dev/snipgif/**
 
@@ -62,11 +65,14 @@ the libraries load from the jsDelivr CDN and the AI model downloads once
    preprocessing exactly (per-frame max scaling, the models' mean/std,
    mask min-max normalisation).
 3. **Composite + export** — the predicted mask becomes the alpha channel;
-   export as a PNG sequence in a `.zip` (JSZip) or an alpha WebM
-   (WebCodecs + webm-muxer; needs a recent Chrome).
+   export as a transparent GIF (gifenc), a PNG sequence in a `.zip`
+   (JSZip) or an alpha WebM (WebCodecs + webm-muxer; needs a recent
+   Chrome). An optional sticker effect (wobble / shake / bounce) is
+   applied by one shared transform before encoding, so the preview and
+   every export agree frame by frame.
 
 Limits: ~15 s of animation, max 120 frames, frames wider than 1280 px
-are downscaled.
+are downscaled, max 5 files per batch.
 
 ## The model download (read this before you fork)
 
@@ -90,10 +96,12 @@ bytes; ISNet: 178,648,008 bytes), then cached by your browser.
 
 ## Tech notes
 
-- onnxruntime-web 1.20.1, pinned on jsDelivr; `numThreads = 1` because
-  the page is not cross-origin isolated.
-- gifuct-js 2.1.2, JSZip 3.10.1, webm-muxer 5.1.2, libwebp-wasm 0.1.6 —
-  all pinned, all loaded from jsDelivr at runtime.
+- onnxruntime-web 1.20.1, pinned on jsDelivr. `numThreads` adapts: the
+  live Blob site sends COOP/COEP headers for `/snipgif/` only (a
+  `_headers` file), making the page cross-origin isolated, so the WASM
+  runtime uses up to 4 threads there; anywhere else it stays at 1.
+- gifuct-js 2.1.2, JSZip 3.10.1, webm-muxer 5.1.2, libwebp-wasm 0.1.6,
+  gifenc 1.0.3 — all pinned, all loaded from jsDelivr at runtime.
 - WebM alpha export needs WebCodecs VP9-alpha encoding (recent Chrome).
   The PNG sequence works in every browser and every editor.
 - Best on desktop; phones work, just slower (the model download plus a

@@ -1,6 +1,6 @@
 /* The hidden attribute must win over the flex/grid displays below. */
 #progress-wrap[hidden], #preview-wrap[hidden], #playback-row[hidden],
-#download-row[hidden] { display: none; }
+#download-row[hidden], #queue-wrap[hidden], #download-all[hidden] { display: none; }
 
 /* SnipGIF tool page — layout per approved mockup 2026-11-22, colors from the
    site pixel theme (navy surfaces, green accents). VT323 drives the tool UI
@@ -98,6 +98,60 @@
 .sg-downloads .btn { font-family: "VT323", monospace; font-size: 1.25rem; }
 .sg-downloads .btn.sg-primary-choice { border-color: #2ee06f; color: #2ee06f; }
 .sg-note { font-family: "VT323", monospace; font-size: 1.15rem; color: var(--muted); flex: 1 1 100%; margin: .2rem 0 0; }
+
+/* Batch queue */
+.sg-queue {
+  border: 1px solid #263069; border-radius: 8px; background: #0d1433;
+  padding: .8rem 1rem .4rem; margin: .8rem 0;
+}
+.sg-queue-head {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 1rem;
+  font-family: "VT323", monospace; font-size: 1.3rem; color: #fff; margin-bottom: .2rem;
+}
+.sg-queue-summary { color: var(--muted); font-size: 1.15rem; }
+.sg-qrow {
+  display: flex; align-items: center; gap: .8rem;
+  padding: .5rem .3rem; border-top: 1px solid #1b2450; cursor: pointer;
+}
+.sg-qrow:hover { background: #101736; }
+.sg-qrow-active { background: #101736; box-shadow: inset 2px 0 0 #2ee06f; }
+.sg-qthumb {
+  width: 44px; height: 44px; flex: 0 0 auto; border-radius: 4px; object-fit: cover;
+  background: repeating-conic-gradient(#3a3f4d 0% 25%, #141821 0% 50%) 0 0 / 14px 14px;
+}
+.sg-qmain { flex: 1 1 auto; min-width: 0; }
+.sg-qname {
+  font-family: "VT323", monospace; font-size: 1.25rem; color: #fff;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: inline-block; max-width: 100%;
+}
+.sg-qmeta { font-family: "VT323", monospace; font-size: 1.1rem; color: var(--muted); }
+.sg-qstatus { font-family: "VT323", monospace; font-size: 1.2rem; color: var(--muted); white-space: nowrap; }
+.sg-qstatus.sg-done { color: #2ee06f; }
+.sg-qstatus.sg-proc { color: #ffc44d; }
+.sg-qstatus.sg-err { color: #ff8f86; }
+.sg-qremove {
+  background: none; border: none; color: #ff8f86; cursor: pointer;
+  font-family: "VT323", monospace; font-size: 1.5rem; line-height: 1; padding: .1rem .3rem;
+}
+.sg-qremove:hover { color: #fff; }
+.sg-qbar {
+  display: block; height: 6px; background: #141b3d; border-radius: 3px;
+  overflow: hidden; margin-top: .3rem;
+}
+.sg-qbar > span { display: block; height: 100%; background: #2ee06f; }
+
+/* Sticker effect panel */
+.sg-fx {
+  border: 1px solid #263069; border-radius: 8px; background: #0d1433;
+  padding: .8rem 1rem; margin: 0 0 .4rem;
+}
+.sg-fx-row { display: flex; flex-wrap: wrap; align-items: center; gap: .55rem .7rem; }
+.sg-fx-note { font-family: "VT323", monospace; font-size: 1.12rem; color: var(--muted); margin: .55rem 0 0; }
+.sg-slider { accent-color: #2ee06f; width: 150px; }
+.sg-fx-val { font-family: "VT323", monospace; font-size: 1.25rem; color: #2ee06f; min-width: 1.1em; }
+
+.sg-howto { line-height: 1.55; padding-left: 1.35rem; margin: .4rem 0 .2rem; }
+.sg-howto li { margin: .5rem 0; }
 
 .sg-story { margin-top: 2.2rem; }
 .sg-footnotes {

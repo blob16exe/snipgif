@@ -4,7 +4,11 @@
  * ImageDecoder API with a libwebp-WASM fallback, MP4 via <video>
  * seek-stepping) -> run an ONNX segmentation
  * model per frame with onnxruntime-web (WASM) -> composite the predicted mask
- * as the alpha channel -> preview + export (PNG sequence .zip, alpha WebM).
+ * as the alpha channel -> preview + export (transparent GIF, PNG sequence
+ * .zip, alpha WebM). Files can be queued as a batch (one model load for the
+ * whole queue), an optional sticker effect (wobble / shake / bounce) is
+ * baked into every export, and when the page is cross-origin isolated the
+ * WASM runtime uses up to 4 threads instead of 1.
  *
  * Models: u2net and isnet-general-use — the same open-source models the rembg
  * project uses, with rembg's exact preprocessing (see preprocess()):
@@ -89,9 +93,26 @@ var dropzone = $("dropzone"), fileInput = $("file-input"),
     downloadRow = $("download-row"), downloadPngBtn = $("download-png"),
     downloadWebmBtn = $("download-webm"), webmNote = $("webm-note"),
     downloadStatus = $("download-status"),
-    chipPng = $("chip-png"), chipWebm = $("chip-webm");
+    chipPng = $("chip-png"), chipWebm = $("chip-webm"), chipGif = $("chip-gif"),
+    queueWrap = $("queue-wrap"), queueRows = $("queue-rows"),
+    queueSummary = $("queue-summary"),
+    downloadGifBtn = $("download-gif"), downloadAllBtn = $("download-all"),
+    fxIntensity = $("fx-intensity"), fxIntensityVal = $("fx-intensity-val");
+var afterLabel = document.querySelector(".sg-label-after");
+var fxChips = {
+  none: $("fx-none"), wobble: $("fx-wobble"),
+  shake: $("fx-shake"), bounce: $("fx-bounce")
+};
 
-/* ---------------- State ---------------- */
+/* ---------------- State ----------------
+ * The queue holds one item per file:
+ *   { id, name, baseName, status, error, progress,
+ *     frames, firstFrame, delays, frameCount, width, height, totalMs,
+ *     outputs, cumMs, totalOutMs, thumb }
+ * status: reading -> queued -> processing -> done | error.
+ * state.frames / state.outputs / state.width / state.height mirror the
+ * ACTIVE item so the preview + download code has one obvious data source. */
+var MAX_QUEUE = 5;
 var state = {
   fileName: "snipgif",
   frames: [],          // [{ imageData, delayMs }] source frames (composited)
@@ -102,8 +123,23 @@ var state = {
   busy: false,
   playing: false,
   playTimer: null,
-  playIndex: 0
+  playIndex: 0,
+  queue: [],
+  activeId: 0,
+  itemSeq: 0,
+  outputFormat: "gif", // 'gif' | 'png' | 'webm' — the highlighted OUTPUT chip
+  effect: "none",      // 'none' | 'wobble' | 'shake' | 'bounce'
+  intensity: 5,        // 1..10
+  fxCache: null,       // { item, effect, intensity, result } for export frames
+  threads: 1           // WASM threads actually in use (set in getSession)
 };
+
+function activeItem() {
+  for (var i = 0; i < state.queue.length; i++) {
+    if (state.queue[i].id === state.activeId) return state.queue[i];
+  }
+  return null;
+}
 
 function showError(msg) {
   errorBox.textContent = msg;
@@ -371,39 +407,22 @@ function scaleFrames(frames, scale) {
   });
 }
 
-async function loadFile(file) {
-  stopPlayback();
-  showError("");
-  state.outputs = [];
-  previewWrap.hidden = true; downloadRow.hidden = true; playbackRow.hidden = true;
-  progressWrap.hidden = true;
-  processBtn.disabled = true;
-  fileInfo.hidden = true;
-
+/* ---------------- Batch queue ---------------- */
+/* Read + validate one file into a queue item. Throws Error with a
+ * user-facing message on any problem; the caller records it on the item
+ * and keeps going with the rest of the batch. */
+async function readItemFrames(item, file) {
   var buf = await file.arrayBuffer();
   var type = sniffType(buf, file.name);
-  if (!type) {
-    showError("That file is not a GIF, animated WebP or MP4. SnipGIF only takes those three.");
-    return;
-  }
+  if (!type) throw new Error("Not a GIF, animated WebP or MP4.");
   var frames;
-  try {
-    fileInfo.hidden = false;
-    fileInfo.textContent = "Reading " + file.name + " ...";
-    if (type === "gif") frames = await extractGif(buf);
-    else if (type === "webp") frames = await extractWebp(file);
-    else frames = await extractMp4(file);
-  } catch (e) {
-    fileInfo.hidden = true;
-    showError(e.message || "Could not read that file.");
-    return;
-  }
+  if (type === "gif") frames = await extractGif(buf);
+  else if (type === "webp") frames = await extractWebp(file);
+  else frames = await extractMp4(file);
 
   var totalMs = frames.reduce(function (s, f) { return s + f.delayMs; }, 0);
   if (totalMs > MAX_DURATION_MS) {
-    fileInfo.hidden = true;
-    showError("That animation runs " + (totalMs / 1000).toFixed(1) + "s — SnipGIF caps input at ~15 seconds. Trim it and try again.");
-    return;
+    throw new Error("Runs " + (totalMs / 1000).toFixed(1) + "s — over the ~15s cap.");
   }
   frames = capFrames(frames);
 
@@ -414,13 +433,207 @@ async function loadFile(file) {
   if (estBytes > MEMORY_BUDGET) scale *= Math.sqrt(MEMORY_BUDGET / estBytes);
   if (scale < 1) frames = scaleFrames(frames, scale);
 
-  state.frames = frames;
-  state.width = frames[0].imageData.width;
-  state.height = frames[0].imageData.height;
-  state.fileName = (file.name.replace(/\.[^.]+$/, "") || "snipgif").replace(/[^a-z0-9-_]+/gi, "-");
-  fileInfo.textContent = file.name + " — " + frames.length + " frames, " +
-    state.width + "×" + state.height + ", " + (totalMs / 1000).toFixed(1) + "s. Pick a mode and hit REMOVE BACKGROUND.";
-  processBtn.disabled = false;
+  item.frames = frames;
+  item.firstFrame = frames[0];
+  item.delays = frames.map(function (f) { return f.delayMs; });
+  item.frameCount = frames.length;
+  item.width = frames[0].imageData.width;
+  item.height = frames[0].imageData.height;
+  item.totalMs = totalMs;
+  item.thumb = makeThumb(frames[0].imageData);
+}
+
+function makeThumb(imageData) {
+  try {
+    var src = document.createElement("canvas");
+    src.width = imageData.width; src.height = imageData.height;
+    src.getContext("2d").putImageData(imageData, 0, 0);
+    var c = document.createElement("canvas");
+    c.width = 44; c.height = 44;
+    var ctx = c.getContext("2d");
+    var s = Math.max(44 / imageData.width, 44 / imageData.height);
+    var dw = imageData.width * s, dh = imageData.height * s;
+    ctx.drawImage(src, (44 - dw) / 2, (44 - dh) / 2, dw, dh);
+    return c.toDataURL("image/png");
+  } catch (e) { return ""; }
+}
+
+function queueCounts() {
+  var c = { done: 0, processing: 0, queued: 0, error: 0, reading: 0, total: state.queue.length };
+  state.queue.forEach(function (it) {
+    if (it.status === "done") c.done++;
+    else if (it.status === "processing") c.processing++;
+    else if (it.status === "queued") c.queued++;
+    else if (it.status === "error") c.error++;
+    else if (it.status === "reading") c.reading++;
+  });
+  return c;
+}
+
+function renderQueue() {
+  var c = queueCounts();
+  queueWrap.hidden = state.queue.length === 0;
+  var parts = [];
+  if (c.done) parts.push(c.done + " done");
+  if (c.processing) parts.push(c.processing + " processing");
+  if (c.queued) parts.push(c.queued + " queued");
+  if (c.error) parts.push(c.error + " error");
+  if (c.reading) parts.push(c.reading + " reading");
+  queueSummary.textContent = parts.join(" · ");
+
+  queueRows.innerHTML = "";
+  state.queue.forEach(function (it) {
+    var row = document.createElement("div");
+    row.className = "sg-qrow" + (it.id === state.activeId ? " sg-qrow-active" : "");
+    var meta = "";
+    if (it.status === "reading") meta = "reading...";
+    else if (it.status === "error") meta = it.error || "Could not read this file.";
+    else meta = it.frameCount + " frames · " + it.width + "×" + it.height;
+    var statusHtml = "", statusCls = "sg-qstatus";
+    if (it.status === "done") { statusHtml = "&#10003; DONE"; statusCls += " sg-done"; }
+    else if (it.status === "processing") { statusHtml = "PROCESSING " + (it.progress || 0) + "%"; statusCls += " sg-proc"; }
+    else if (it.status === "error") { statusHtml = "ERROR"; statusCls += " sg-err"; }
+    else if (it.status === "reading") statusHtml = "READING";
+    else statusHtml = "QUEUED";
+    row.innerHTML =
+      (it.thumb ? '<img class="sg-qthumb" alt="" src="' + it.thumb + '">' : '<span class="sg-qthumb"></span>') +
+      '<span class="sg-qmain"><span class="sg-qname"></span><br><span class="sg-qmeta"></span>' +
+      (it.status === "processing" ? '<span class="sg-qbar"><span style="width:' + (it.progress || 0) + '%"></span></span>' : "") +
+      '</span>' +
+      '<span class="' + statusCls + '">' + statusHtml + '</span>' +
+      '<button type="button" class="sg-qremove" title="Remove from queue" aria-label="Remove ' +
+      it.name.replace(/"/g, "&quot;") + '">&times;</button>';
+    row.querySelector(".sg-qname").textContent = it.name;
+    row.querySelector(".sg-qmeta").textContent = meta;
+    row.querySelector(".sg-qremove").addEventListener("click", function (e) {
+      e.stopPropagation();
+      removeItem(it.id);
+    });
+    row.addEventListener("click", function () {
+      if (it.status === "done" || it.status === "queued") setActive(it, true);
+    });
+    queueRows.appendChild(row);
+  });
+  updateDownloadAll();
+}
+
+function updateDownloadAll() {
+  var c = queueCounts();
+  var show = c.done >= 2;
+  downloadAllBtn.hidden = !show;
+  if (show) downloadAllBtn.textContent = "DOWNLOAD ALL — " + c.done + " FILES (.ZIP)";
+}
+
+function updateProcessBtn() {
+  var c = queueCounts();
+  var pending = c.queued;
+  processBtn.disabled = state.busy || pending === 0;
+  processBtn.textContent = pending > 1 ? "REMOVE BACKGROUND — " + pending + " FILES" : "REMOVE BACKGROUND";
+}
+
+function updateFileInfo() {
+  var c = queueCounts();
+  if (!state.queue.length) { fileInfo.hidden = true; return; }
+  fileInfo.hidden = false;
+  if (state.queue.length === 1) {
+    var it = state.queue[0];
+    if (it.status === "queued" || it.status === "done") {
+      fileInfo.textContent = it.name + " — " + it.frameCount + " frames, " + it.width + "×" + it.height +
+        ", " + (it.totalMs / 1000).toFixed(1) + "s. Pick a mode and hit REMOVE BACKGROUND.";
+      return;
+    }
+    if (it.status === "reading") { fileInfo.textContent = "Reading " + it.name + " ..."; return; }
+    if (it.status === "error") { fileInfo.hidden = true; return; }
+  }
+  var bits = [];
+  if (c.queued) bits.push(c.queued + " waiting");
+  if (c.done) bits.push(c.done + " done");
+  if (c.error) bits.push(c.error + " could not be read (see the queue)");
+  fileInfo.textContent = state.queue.length + " files in the queue — " + bits.join(", ") +
+    ". Hit REMOVE BACKGROUND to cut them all; the model loads once for the whole batch.";
+}
+
+/* Mirror an item into state.* and (when asked) refresh the preview area. */
+function setActive(item, show) {
+  if (!item) return;
+  state.activeId = item.id;
+  state.frames = item.frames || [];
+  state.outputs = item.outputs || [];
+  state.width = item.width || 0;
+  state.height = item.height || 0;
+  state.fileName = item.baseName;
+  state.fxCache = null;
+  if (show) {
+    if (item.outputs && item.outputs.length) showResults();
+    else {
+      stopPlayback();
+      previewWrap.hidden = true; downloadRow.hidden = true; playbackRow.hidden = true;
+    }
+  }
+  renderQueue();
+}
+
+function removeItem(id) {
+  if (state.busy) return;
+  var idx = -1;
+  state.queue.forEach(function (it, i) { if (it.id === id) idx = i; });
+  if (idx < 0) return;
+  var wasActive = state.activeId === id;
+  state.queue.splice(idx, 1);
+  if (wasActive) {
+    state.activeId = 0;
+    state.frames = []; state.outputs = []; state.fxCache = null;
+    stopPlayback();
+    previewWrap.hidden = true; downloadRow.hidden = true; playbackRow.hidden = true;
+    var next = state.queue.filter(function (it) { return it.status === "done"; })[0] ||
+               state.queue.filter(function (it) { return it.status === "queued"; })[0];
+    if (next) setActive(next, true);
+  }
+  renderQueue();
+  updateProcessBtn();
+  updateFileInfo();
+}
+
+async function addFiles(fileList) {
+  var files = Array.prototype.slice.call(fileList || []);
+  if (!files.length) return;
+  showError("");
+  progressWrap.hidden = true;
+  var skipped = 0;
+  for (var i = 0; i < files.length; i++) {
+    if (state.queue.length >= MAX_QUEUE) { skipped = files.length - i; break; }
+    var file = files[i];
+    var item = {
+      id: ++state.itemSeq,
+      name: file.name,
+      baseName: (file.name.replace(/\.[^.]+$/, "") || "snipgif").replace(/[^a-z0-9-_]+/gi, "-"),
+      status: "reading", error: "", progress: 0,
+      frames: null, firstFrame: null, delays: [], frameCount: 0,
+      width: 0, height: 0, totalMs: 0,
+      outputs: null, cumMs: null, totalOutMs: 0, thumb: ""
+    };
+    state.queue.push(item);
+    renderQueue();
+    updateFileInfo();
+    try {
+      await readItemFrames(item, file);
+      item.status = "queued";
+    } catch (e) {
+      item.status = "error";
+      item.error = e.message || "Could not read that file.";
+    }
+    renderQueue();
+    updateProcessBtn();
+    updateFileInfo();
+  }
+  if (skipped > 0) {
+    showError("The batch is capped at " + MAX_QUEUE + " files per round — " + skipped + " extra file(s) were skipped.");
+  }
+  if (!activeItem()) {
+    var first = state.queue.filter(function (it) { return it.status === "done"; })[0] ||
+                state.queue.filter(function (it) { return it.status === "queued"; })[0];
+    if (first) setActive(first, false);
+  }
 }
 
 /* ---------------- Model loading ---------------- */
@@ -501,7 +714,16 @@ async function getSession(key) {
   if (state.sessions[key]) return state.sessions[key];
   if (!window.ort) throw new Error("The ONNX runtime failed to load. Check your connection and reload the page.");
   ort.env.wasm.wasmPaths = ORT_DIST;
-  ort.env.wasm.numThreads = 1; // no cross-origin isolation here; single-thread WASM is the reliable path
+  // Multi-threaded WASM needs cross-origin isolation (SharedArrayBuffer).
+  // The live Blob site sends COOP/COEP headers for /snipgif/ only (via a
+  // _headers file), so where isolation is active we fan out to up to 4 threads;
+  // everywhere else this stays at 1 — the previous reliable behaviour.
+  var threads = 1;
+  if (self.crossOriginIsolated && navigator.hardwareConcurrency) {
+    threads = Math.min(4, navigator.hardwareConcurrency);
+  }
+  ort.env.wasm.numThreads = threads;
+  state.threads = threads;
   var buf = await fetchModel(key);
   modelStatus.textContent = "Loading the " + key.toUpperCase() + " model into the browser...";
   var session = await ort.InferenceSession.create(buf, { executionProviders: ["wasm"] });
@@ -582,8 +804,9 @@ async function predictMask(session, imageData, model) {
 }
 
 /* AUTO heuristic: dark middle frame -> ISNet, otherwise u2net. */
-function pickAutoModel() {
-  var f = state.frames[Math.floor(state.frames.length / 2)];
+function pickAutoModel(item) {
+  var frames = (item && item.frames) || state.frames;
+  var f = frames[Math.floor(frames.length / 2)];
   var px = f.imageData.data;
   var sum = 0, n = 0;
   for (var i = 0; i < px.length; i += 16) { // sample every 4th pixel
@@ -595,72 +818,243 @@ function pickAutoModel() {
 }
 
 /* ---------------- Processing ---------------- */
+function computeCum(item) {
+  var cum = [], t = 0;
+  (item.outputs || []).forEach(function (o) { cum.push(t); t += o.delayMs; });
+  item.cumMs = cum;
+  item.totalOutMs = t || 1;
+}
+
+/* Once a batch grows large, holding every file's SOURCE frames in RAM gets
+ * reckless. When retained source bytes pass ~500 MB, drop the source frames
+ * of finished, non-active items (their cutouts, first frame and delays are
+ * kept, so preview of the AFTER side and all downloads still work; only the
+ * BEFORE-side animation of those items becomes a still first frame). */
+function maybeFreeFrames() {
+  var total = 0;
+  state.queue.forEach(function (it) {
+    if (it.frames) total += it.width * it.height * 4 * it.frames.length;
+  });
+  if (total <= 500 * 1024 * 1024) return;
+  state.queue.forEach(function (it) {
+    if (total <= 500 * 1024 * 1024) return;
+    if (it.status === "done" && it.id !== state.activeId && it.frames) {
+      total -= it.width * it.height * 4 * it.frames.length;
+      it.frames = null;
+    }
+  });
+}
+
 async function processAll() {
-  if (!state.frames.length || state.busy) return;
+  var pending = state.queue.filter(function (it) { return it.status === "queued"; });
+  if (!pending.length || state.busy) return;
   state.busy = true;
-  processBtn.disabled = true;
+  updateProcessBtn();
   showError("");
   downloadRow.hidden = true;
   progressWrap.hidden = false;
-  setProgress(0, "Processing... frame 0 / " + state.frames.length);
+  setProgress(0, "Processing...");
 
   try {
     var mode = modeSelect.value;
-    var key = mode === "auto" ? pickAutoModel() : mode;
-    var model = MODELS[key];
-    var session = await getSession(key);
-    modelStatus.textContent = "Mode: " + (mode === "auto" ? "AUTO → " : "") + model.label + ". Running on your device...";
+    var lastModelLabel = "";
+    for (var qi = 0; qi < pending.length; qi++) {
+      var item = pending[qi];
+      item.status = "processing";
+      item.progress = 0;
+      setActive(item, false);
+      renderQueue();
+      var key = mode === "auto" ? pickAutoModel(item) : mode;
+      var model = MODELS[key];
+      lastModelLabel = model.label;
+      var session = await getSession(key);
+      modelStatus.textContent = "Mode: " + (mode === "auto" ? "AUTO → " : "") + model.label +
+        ". Running on your device" + (state.threads > 1 ? " with " + state.threads + " threads" : "") + "...";
 
-    var outputs = [];
-    for (var i = 0; i < state.frames.length; i++) {
-      setProgress(i / state.frames.length, "Processing... frame " + i + " / " + state.frames.length);
-      outputs.push({
-        imageData: await predictMask(session, state.frames[i].imageData, model),
-        delayMs: state.frames[i].delayMs
-      });
-      await yieldToUI();
+      var outputs = [];
+      var n = item.frames.length;
+      for (var i = 0; i < n; i++) {
+        var label = (pending.length > 1 ? "Processing file " + (qi + 1) + " of " + pending.length + " — frame " : "Processing... frame ") +
+          i + " / " + n + (state.threads > 1 ? " · " + state.threads + " threads" : "");
+        setProgress((qi + i / n) / pending.length, label);
+        item.progress = Math.round(i / n * 100);
+        if (i % 4 === 0) renderQueue();
+        outputs.push({
+          imageData: await predictMask(session, item.frames[i].imageData, model),
+          delayMs: item.frames[i].delayMs
+        });
+        await yieldToUI();
+      }
+      item.outputs = outputs;
+      computeCum(item);
+      item.status = "done";
+      item.progress = 100;
+      if (item.id === state.activeId) state.outputs = outputs;
+      renderQueue();
+      maybeFreeFrames();
     }
-    setProgress(1, "Done — " + state.frames.length + " frames cut.");
-    modelStatus.textContent = "Model used: " + model.label + ". Nothing was uploaded.";
-    state.outputs = outputs;
-    showResults();
+    setProgress(1, pending.length > 1 ? "Done — " + pending.length + " files cut." : "Done — " + pending[0].frameCount + " frames cut.");
+    modelStatus.textContent = "Model used: " + lastModelLabel + ". Nothing was uploaded.";
+    setActive(pending[pending.length - 1], true);
   } catch (e) {
+    state.queue.forEach(function (it) { if (it.status === "processing") it.status = "queued"; });
+    renderQueue();
     showError(e.message || "Processing failed.");
     progressWrap.hidden = true;
   }
   state.busy = false;
-  processBtn.disabled = false;
+  updateProcessBtn();
 }
 
 function showResults() {
+  var item = activeItem();
+  if (!item || !item.outputs || !item.outputs.length) return;
   previewWrap.hidden = false;
   playbackRow.hidden = false;
   downloadRow.hidden = false;
-  beforeCanvas.width = state.width; beforeCanvas.height = state.height;
-  afterCanvas.width = state.width; afterCanvas.height = state.height;
+  beforeCanvas.width = item.width; beforeCanvas.height = item.height;
+  var dims = exportDimsFor(item);
+  afterCanvas.width = dims.w; afterCanvas.height = dims.h;
   checkWebmSupport();
+  updateDownloadAll();
   startPlayback();
 }
 
-/* ---------------- Preview playback ---------------- */
-function drawFrame(idx) {
-  if (!state.frames.length) return;
-  beforeCanvas.getContext("2d").putImageData(state.frames[idx].imageData, 0, 0);
-  if (state.outputs.length) {
-    afterCanvas.getContext("2d").putImageData(state.outputs[idx].imageData, 0, 0);
+/* ---------------- Sticker effects ----------------
+ * One shared transform drives BOTH the preview and every export, so what
+ * you see is exactly what downloads. The phase is derived from the frame's
+ * position in the loop (cumulative delays), with an integer number of
+ * cycles per loop, so exported GIFs loop seamlessly. SHAKE uses a
+ * deterministic per-frame hash — never Math.random — for the same reason:
+ * preview and export must agree frame by frame. */
+var FX_PAD_RATIO = 0.09; // transparent margin added around the frame when an effect is on
+
+function fxActive() { return state.effect !== "none"; }
+
+function exportDimsFor(item) {
+  var pad = fxActive() ? Math.ceil(Math.max(item.width, item.height) * FX_PAD_RATIO) : 0;
+  return { w: item.width + 2 * pad, h: item.height + 2 * pad, pad: pad };
+}
+
+function fxHash(n) {
+  var x = Math.sin(n * 127.1 + 311.7) * 43758.5453;
+  return x - Math.floor(x);
+}
+
+function fxTransform(item, idx) {
+  var t = { angle: 0, dx: 0, dy: 0, sx: 1, sy: 1 };
+  if (!fxActive() || !item.cumMs) return t;
+  var k = state.intensity / 10;
+  var p = item.cumMs[idx] / item.totalOutMs; // 0..1 across the loop
+  if (state.effect === "wobble") {
+    t.angle = Math.sin(p * Math.PI * 4) * (state.intensity * 1.1) * Math.PI / 180;
+  } else if (state.effect === "shake") {
+    var amp = k * 0.02 * Math.max(item.width, item.height);
+    t.dx = (fxHash(idx * 2) - 0.5) * 2 * amp;
+    t.dy = (fxHash(idx * 2 + 1) - 0.5) * 2 * amp;
+  } else if (state.effect === "bounce") {
+    var b = Math.abs(Math.sin(p * Math.PI * 4));
+    var land = Math.pow(1 - b, 3);
+    t.dy = -b * k * 0.06 * item.height;
+    t.sy = 1 - 0.10 * k * land;
+    t.sx = 1 + 0.06 * k * land;
   }
-  frameReadout.textContent = "Frame " + (idx + 1) + " / " + state.frames.length;
+  return t;
+}
+
+var fxTmpCanvas = document.createElement("canvas");
+function drawTransformed(ctx, imageData, item, idx, dims) {
+  fxTmpCanvas.width = imageData.width; fxTmpCanvas.height = imageData.height;
+  fxTmpCanvas.getContext("2d").putImageData(imageData, 0, 0);
+  var t = fxTransform(item, idx);
+  ctx.clearRect(0, 0, dims.w, dims.h);
+  ctx.save();
+  ctx.translate(dims.w / 2 + t.dx, dims.h / 2 + t.dy);
+  ctx.rotate(t.angle);
+  ctx.scale(t.sx, t.sy);
+  ctx.drawImage(fxTmpCanvas, -imageData.width / 2, -imageData.height / 2);
+  ctx.restore();
+}
+
+/* The item's cutout frames with the current effect baked in, at export
+ * dimensions. Cached per (item, effect, intensity); the no-effect path
+ * returns the raw outputs untouched. */
+function getExportFrames(item) {
+  if (!item || !item.outputs || !item.outputs.length) return null;
+  if (!fxActive()) return { frames: item.outputs, width: item.width, height: item.height };
+  var cache = state.fxCache;
+  if (cache && cache.item === item && cache.effect === state.effect && cache.intensity === state.intensity) {
+    return cache.result;
+  }
+  var dims = exportDimsFor(item);
+  var c = document.createElement("canvas");
+  c.width = dims.w; c.height = dims.h;
+  var ctx = c.getContext("2d", { willReadFrequently: true });
+  var frames = item.outputs.map(function (o, i) {
+    drawTransformed(ctx, o.imageData, item, i, dims);
+    return { imageData: ctx.getImageData(0, 0, dims.w, dims.h), delayMs: o.delayMs };
+  });
+  var result = { frames: frames, width: dims.w, height: dims.h };
+  state.fxCache = { item: item, effect: state.effect, intensity: state.intensity, result: result };
+  return result;
+}
+
+function fxSuffix() {
+  if (!fxActive()) return "";
+  return " · effect: " + state.effect.toUpperCase() + " · intensity " + state.intensity;
+}
+
+function onFxChanged() {
+  state.fxCache = null;
+  var item = activeItem();
+  if (!item || !item.outputs || !item.outputs.length) return;
+  var dims = exportDimsFor(item);
+  afterCanvas.width = dims.w; afterCanvas.height = dims.h;
+  drawFrame(state.playIndex || 0);
+  checkWebmSupport();
+}
+
+/* ---------------- Preview playback ---------------- */
+function drawAfterFrame(idx) {
+  var item = activeItem();
+  if (!item || !item.outputs || !item.outputs.length) return;
+  var dims = exportDimsFor(item);
+  if (afterCanvas.width !== dims.w || afterCanvas.height !== dims.h) {
+    afterCanvas.width = dims.w; afterCanvas.height = dims.h;
+  }
+  var ctx = afterCanvas.getContext("2d");
+  if (!fxActive()) {
+    ctx.putImageData(item.outputs[idx].imageData, 0, 0);
+    return;
+  }
+  drawTransformed(ctx, item.outputs[idx].imageData, item, idx, dims);
+}
+
+function drawFrame(idx) {
+  var item = activeItem();
+  if (!item || !item.frameCount) return;
+  idx = Math.min(idx, item.frameCount - 1);
+  var src = item.frames || (item.firstFrame ? [item.firstFrame] : []);
+  if (src.length) {
+    beforeCanvas.getContext("2d").putImageData(src[Math.min(idx, src.length - 1)].imageData, 0, 0);
+  }
+  if (item.outputs && item.outputs.length) drawAfterFrame(idx);
+  frameReadout.textContent = "Frame " + (idx + 1) + " / " + item.frameCount + fxSuffix();
 }
 function startPlayback() {
+  var item = activeItem();
+  if (!item || !item.frameCount) return;
   stopPlayback();
   state.playing = true;
   playpauseBtn.innerHTML = "&#10073;&#10073; PAUSE PREVIEW";
   state.playIndex = 0;
   var step = function () {
     if (!state.playing) return;
+    var cur = activeItem();
+    if (!cur || !cur.frameCount) { stopPlayback(); return; }
     drawFrame(state.playIndex);
-    var delay = state.frames[state.playIndex].delayMs;
-    state.playIndex = (state.playIndex + 1) % state.frames.length;
+    var delay = cur.delays[state.playIndex] || 100;
+    state.playIndex = (state.playIndex + 1) % cur.frameCount;
     state.playTimer = setTimeout(step, Math.max(20, delay));
   };
   step();
@@ -671,7 +1065,8 @@ function stopPlayback() {
   state.playTimer = null;
 }
 playpauseBtn.addEventListener("click", function () {
-  if (!state.frames.length) return;
+  var item = activeItem();
+  if (!item || !item.frameCount) return;
   if (state.playing) {
     stopPlayback();
     playpauseBtn.innerHTML = "&#9654; PLAY PREVIEW";
@@ -698,95 +1093,204 @@ function frameToPngBlob(imageData) {
   });
 }
 
+async function addPngFramesToZip(zip, item) {
+  var exp = getExportFrames(item);
+  var pad = String(exp.frames.length).length;
+  for (var i = 0; i < exp.frames.length; i++) {
+    var blob = await frameToPngBlob(exp.frames[i].imageData);
+    zip.file("frame_" + String(i).padStart(pad, "0") + ".png", blob);
+  }
+}
+
 downloadPngBtn.addEventListener("click", async function () {
-  if (!state.outputs.length || !window.JSZip) return;
+  var item = activeItem();
+  if (!item || !item.outputs || !item.outputs.length || !window.JSZip) return;
   downloadPngBtn.disabled = true;
   downloadStatus.textContent = "Building the ZIP...";
   try {
     var zip = new JSZip();
-    var pad = String(state.outputs.length).length;
-    for (var i = 0; i < state.outputs.length; i++) {
-      var blob = await frameToPngBlob(state.outputs[i].imageData);
-      zip.file("frame_" + String(i).padStart(pad, "0") + ".png", blob);
-      downloadStatus.textContent = "Building the ZIP... " + (i + 1) + " / " + state.outputs.length;
-    }
+    await addPngFramesToZip(zip, item);
     var out = await zip.generateAsync({ type: "blob", compression: "STORE" });
-    downloadBlob(out, state.fileName + "-cutout-png.zip");
-    downloadStatus.textContent = "ZIP downloaded — " + state.outputs.length + " transparent PNG frames.";
+    downloadBlob(out, item.baseName + "-cutout-png.zip");
+    downloadStatus.textContent = "ZIP downloaded — " + item.outputs.length + " transparent PNG frames.";
   } catch (e) {
     downloadStatus.textContent = "ZIP failed: " + (e.message || e);
   }
   downloadPngBtn.disabled = false;
 });
 
+/* Transparent GIF: gifenc (MIT) encodes in the browser. GIF alpha is
+ * 1-bit, so the model's soft alpha is snapped at 128 first — pixels below
+ * become fully transparent (RGB zeroed, so no colour fringe survives),
+ * pixels above become fully opaque. Edges are therefore harder than in
+ * the PNG/WebM exports; the UI says so next to the button. */
+async function encodeGifBlob(item, statusPrefix) {
+  var exp = getExportFrames(item);
+  var mod = await import("https://cdn.jsdelivr.net/npm/gifenc@1.0.3/+esm");
+  var gif = mod.GIFEncoder();
+  for (var i = 0; i < exp.frames.length; i++) {
+    var d = exp.frames[i].imageData.data;
+    var rgba = new Uint8Array(d.length);
+    for (var p = 0; p < d.length; p += 4) {
+      if (d[p + 3] >= 128) {
+        rgba[p] = d[p]; rgba[p + 1] = d[p + 1]; rgba[p + 2] = d[p + 2]; rgba[p + 3] = 255;
+      }
+    }
+    var palette = mod.quantize(rgba, 256, { format: "rgba4444" });
+    var index = mod.applyPalette(rgba, palette, "rgba4444");
+    gif.writeFrame(index, exp.width, exp.height, {
+      palette: palette,
+      delay: exp.frames[i].delayMs,
+      transparent: true,
+      repeat: i === 0 ? 0 : undefined,
+      first: i === 0
+    });
+    if (statusPrefix && i % 6 === 5) {
+      downloadStatus.textContent = statusPrefix + " " + (i + 1) + " / " + exp.frames.length;
+      await yieldToUI();
+    }
+  }
+  gif.finish();
+  return new Blob([gif.bytes()], { type: "image/gif" });
+}
+
+downloadGifBtn.addEventListener("click", async function () {
+  var item = activeItem();
+  if (!item || !item.outputs || !item.outputs.length) return;
+  downloadGifBtn.disabled = true;
+  downloadStatus.textContent = "Encoding the GIF...";
+  try {
+    var blob = await encodeGifBlob(item, "Encoding the GIF...");
+    downloadBlob(blob, item.baseName + "-cutout.gif");
+    downloadStatus.textContent = "GIF downloaded — transparent, " + item.outputs.length + " frames, " +
+      (blob.size / 1048576).toFixed(1) + " MB.";
+  } catch (e) {
+    downloadStatus.textContent = "GIF encoding failed: " + (e.message || e);
+  }
+  downloadGifBtn.disabled = false;
+});
+
 /* WebM alpha: WebCodecs VP9 encode with alpha kept, muxed with webm-muxer.
    Best effort by design — where the browser can't do it, the button is
    disabled with an honest note and the PNG sequence remains the output. */
 var webmSupported = false;
+async function webmConfigOk(w, h) {
+  if (!("VideoEncoder" in window)) return false;
+  try {
+    var support = await VideoEncoder.isConfigSupported({
+      codec: "vp09.00.10.08",
+      width: w, height: h,
+      alpha: "keep", bitrate: 2_000_000, framerate: 30
+    });
+    return !!support.supported;
+  } catch (e) { return false; }
+}
 async function checkWebmSupport() {
   webmSupported = false;
   downloadWebmBtn.disabled = true;
   webmNote.hidden = true;
-  if (!("VideoEncoder" in window) || !state.outputs.length) { webmNote.hidden = false; return; }
-  try {
-    var cfg = {
-      codec: "vp09.00.10.08",
-      width: state.width, height: state.height,
-      alpha: "keep", bitrate: 2_000_000, framerate: 30
-    };
-    var support = await VideoEncoder.isConfigSupported(cfg);
-    webmSupported = !!support.supported;
-  } catch (e) { webmSupported = false; }
+  var item = activeItem();
+  if (!item || !item.outputs || !item.outputs.length) { webmNote.hidden = false; return; }
+  var dims = exportDimsFor(item);
+  webmSupported = await webmConfigOk(dims.w, dims.h);
   downloadWebmBtn.disabled = !webmSupported;
   webmNote.hidden = webmSupported;
 }
 
+async function encodeWebmBlob(item, statusPrefix) {
+  var exp = getExportFrames(item);
+  var muxerMod = await import("https://cdn.jsdelivr.net/npm/webm-muxer@5.1.2/build/webm-muxer.mjs");
+  var muxer = new muxerMod.Muxer({
+    target: new muxerMod.ArrayBufferTarget(),
+    video: { codec: "V_VP9", width: exp.width, height: exp.height, alpha: true }
+  });
+  var encoderError = null;
+  var encoder = new VideoEncoder({
+    output: function (chunk, meta) { muxer.addVideoChunk(chunk, meta); },
+    error: function (e) { encoderError = e; }
+  });
+  encoder.configure({
+    codec: "vp09.00.10.08",
+    width: exp.width, height: exp.height,
+    alpha: "keep", bitrate: 2_000_000, framerate: 30
+  });
+  var canvas = document.createElement("canvas");
+  canvas.width = exp.width; canvas.height = exp.height;
+  var ctx = canvas.getContext("2d");
+  var timestamp = 0;
+  for (var i = 0; i < exp.frames.length; i++) {
+    ctx.putImageData(exp.frames[i].imageData, 0, 0);
+    var durationUs = Math.max(1, Math.round(exp.frames[i].delayMs * 1000));
+    var frame = new VideoFrame(canvas, { timestamp: timestamp, duration: durationUs, alpha: "keep" });
+    encoder.encode(frame, { keyFrame: i === 0 });
+    frame.close();
+    timestamp += durationUs;
+    if (statusPrefix) downloadStatus.textContent = statusPrefix + " " + (i + 1) + " / " + exp.frames.length;
+    if (encoder.encodeQueueSize > 4) {
+      await new Promise(function (r) {
+        var t = setInterval(function () { if (encoder.encodeQueueSize <= 4) { clearInterval(t); r(); } }, 30);
+      });
+    }
+  }
+  await encoder.flush();
+  if (encoderError) throw encoderError;
+  muxer.finalize();
+  return new Blob([muxer.target.buffer], { type: "video/webm" });
+}
+
 downloadWebmBtn.addEventListener("click", async function () {
-  if (!state.outputs.length || !webmSupported) return;
+  var item = activeItem();
+  if (!item || !item.outputs || !item.outputs.length || !webmSupported) return;
   downloadWebmBtn.disabled = true;
   downloadStatus.textContent = "Encoding the WebM...";
   try {
-    var muxerMod = await import("https://cdn.jsdelivr.net/npm/webm-muxer@5.1.2/build/webm-muxer.mjs");
-    var muxer = new muxerMod.Muxer({
-      target: new muxerMod.ArrayBufferTarget(),
-      video: { codec: "V_VP9", width: state.width, height: state.height, alpha: true }
-    });
-    var encoder = new VideoEncoder({
-      output: function (chunk, meta) { muxer.addVideoChunk(chunk, meta); },
-      error: function (e) { throw e; }
-    });
-    encoder.configure({
-      codec: "vp09.00.10.08",
-      width: state.width, height: state.height,
-      alpha: "keep", bitrate: 2_000_000, framerate: 30
-    });
-    var canvas = document.createElement("canvas");
-    canvas.width = state.width; canvas.height = state.height;
-    var ctx = canvas.getContext("2d");
-    var timestamp = 0;
-    for (var i = 0; i < state.outputs.length; i++) {
-      ctx.putImageData(state.outputs[i].imageData, 0, 0);
-      var durationUs = Math.max(1, Math.round(state.outputs[i].delayMs * 1000));
-      var frame = new VideoFrame(canvas, { timestamp: timestamp, duration: durationUs, alpha: "keep" });
-      encoder.encode(frame, { keyFrame: i === 0 });
-      frame.close();
-      timestamp += durationUs;
-      downloadStatus.textContent = "Encoding the WebM... " + (i + 1) + " / " + state.outputs.length;
-      if (encoder.encodeQueueSize > 4) {
-        await new Promise(function (r) {
-          var t = setInterval(function () { if (encoder.encodeQueueSize <= 4) { clearInterval(t); r(); } }, 30);
-        });
-      }
-    }
-    await encoder.flush();
-    muxer.finalize();
-    var blob = new Blob([muxer.target.buffer], { type: "video/webm" });
-    downloadBlob(blob, state.fileName + "-cutout-alpha.webm");
+    var blob = await encodeWebmBlob(item, "Encoding the WebM...");
+    downloadBlob(blob, item.baseName + "-cutout-alpha.webm");
     downloadStatus.textContent = "WebM downloaded — VP9 with a real alpha channel.";
   } catch (e) {
     downloadStatus.textContent = "WebM encoding failed in this browser (" + (e.message || e) + "). The PNG sequence above always works.";
   }
   downloadWebmBtn.disabled = false;
+});
+
+/* Batch download: every finished item, in the format picked by the OUTPUT
+ * chips, each in its own folder inside one .zip. If WebM is picked but a
+ * file's dimensions are not encodable here, that file falls back to GIF
+ * and the status line says so. */
+downloadAllBtn.addEventListener("click", async function () {
+  var done = state.queue.filter(function (it) { return it.status === "done" && it.outputs && it.outputs.length; });
+  if (done.length < 2 || !window.JSZip) return;
+  downloadAllBtn.disabled = true;
+  var fellBack = false;
+  try {
+    var zip = new JSZip();
+    for (var i = 0; i < done.length; i++) {
+      var item = done[i];
+      var folder = zip.folder(item.baseName);
+      downloadStatus.textContent = "Packing file " + (i + 1) + " of " + done.length + " (" + item.name + ")...";
+      if (state.outputFormat === "gif") {
+        folder.file(item.baseName + "-cutout.gif", await encodeGifBlob(item, null));
+      } else if (state.outputFormat === "webm") {
+        var dims = exportDimsFor(item);
+        if (await webmConfigOk(dims.w, dims.h)) {
+          folder.file(item.baseName + "-cutout-alpha.webm", await encodeWebmBlob(item, null));
+        } else {
+          folder.file(item.baseName + "-cutout.gif", await encodeGifBlob(item, null));
+          fellBack = true;
+        }
+      } else {
+        await addPngFramesToZip(folder, item);
+      }
+      await yieldToUI();
+    }
+    var out = await zip.generateAsync({ type: "blob", compression: "STORE" });
+    downloadBlob(out, "snipgif-batch-" + done.length + "-files.zip");
+    downloadStatus.textContent = "Batch ZIP downloaded — " + done.length + " files, one folder each" +
+      (fellBack ? " (some files fell back to GIF: WebM is not encodable at their size here)." : ".");
+  } catch (e) {
+    downloadStatus.textContent = "Batch ZIP failed: " + (e.message || e);
+  }
+  downloadAllBtn.disabled = false;
 });
 
 /* ---------------- UI wiring ---------------- */
@@ -801,27 +1305,57 @@ dropzone.addEventListener("keydown", function (e) {
   dropzone.addEventListener(ev, function (e) { e.preventDefault(); dropzone.classList.remove("sg-dragging"); });
 });
 dropzone.addEventListener("drop", function (e) {
-  var f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
-  if (f) loadFile(f);
+  var files = e.dataTransfer && e.dataTransfer.files;
+  if (files && files.length) addFiles(files);
 });
 fileInput.addEventListener("change", function () {
-  if (fileInput.files && fileInput.files[0]) loadFile(fileInput.files[0]);
+  if (fileInput.files && fileInput.files.length) addFiles(fileInput.files);
   fileInput.value = "";
 });
 processBtn.addEventListener("click", processAll);
-previewSelect.addEventListener("change", function () {
-  afterBox.classList.toggle("sg-checker", previewSelect.value === "checker");
-  document.querySelector(".sg-label-after").textContent =
-    previewSelect.value === "checker" ? "AFTER — TRANSPARENT (SHOWN ON CHECKER)" : "AFTER — TRANSPARENT (SHOWN ON BLACK)";
-});
-function setOutputChoice(webm) {
-  chipPng.classList.toggle("sg-chip-on", !webm);
-  chipWebm.classList.toggle("sg-chip-on", webm);
-  chipPng.setAttribute("aria-checked", String(!webm));
-  chipWebm.setAttribute("aria-checked", String(webm));
-  downloadPngBtn.classList.toggle("sg-primary-choice", !webm);
-  downloadWebmBtn.classList.toggle("sg-primary-choice", webm);
+
+function syncPreviewBackdrop() {
+  var checker = previewSelect.value === "checker";
+  afterBox.classList.toggle("sg-checker", checker);
+  if (afterLabel) {
+    afterLabel.textContent = checker ? "AFTER — TRANSPARENT (ON CHECKERBOARD)" : "AFTER — TRANSPARENT (SHOWN ON BLACK)";
+  }
 }
-chipPng.addEventListener("click", function () { setOutputChoice(false); });
-chipWebm.addEventListener("click", function () { setOutputChoice(true); });
-setOutputChoice(false);
+previewSelect.addEventListener("change", syncPreviewBackdrop);
+syncPreviewBackdrop();
+
+function setOutputChoice(format) {
+  state.outputFormat = format;
+  var map = { png: chipPng, webm: chipWebm, gif: chipGif };
+  Object.keys(map).forEach(function (k) {
+    map[k].classList.toggle("sg-chip-on", k === format);
+    map[k].setAttribute("aria-checked", String(k === format));
+  });
+  downloadPngBtn.classList.toggle("sg-primary-choice", format === "png");
+  downloadWebmBtn.classList.toggle("sg-primary-choice", format === "webm");
+  downloadGifBtn.classList.toggle("sg-primary-choice", format === "gif");
+}
+chipPng.addEventListener("click", function () { setOutputChoice("png"); });
+chipWebm.addEventListener("click", function () { setOutputChoice("webm"); });
+chipGif.addEventListener("click", function () { setOutputChoice("gif"); });
+setOutputChoice("gif");
+
+function setEffect(name) {
+  state.effect = name;
+  Object.keys(fxChips).forEach(function (k) {
+    fxChips[k].classList.toggle("sg-chip-on", k === name);
+    fxChips[k].setAttribute("aria-checked", String(k === name));
+  });
+  onFxChanged();
+}
+Object.keys(fxChips).forEach(function (k) {
+  fxChips[k].addEventListener("click", function () { setEffect(k); });
+});
+fxIntensity.addEventListener("input", function () {
+  state.intensity = Number(fxIntensity.value) || 5;
+  fxIntensityVal.textContent = String(state.intensity);
+  onFxChanged();
+});
+fxIntensityVal.textContent = String(state.intensity);
+renderQueue();
+updateProcessBtn();
