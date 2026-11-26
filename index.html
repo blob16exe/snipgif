@@ -3,11 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>SnipGIF — free GIF background remover, runs in your browser | Blob</title>
-<meta name="description" content="Drop a GIF, animated WebP or short MP4 and get the character back with the background cut clean: transparent GIF, PNG sequence or alpha WebM. Batch several files at once and bake in a sticker effect. 100% in your browser — no uploads, no watermark, no sign-up.">
+<title>SnipGIF — free background remover for GIFs, images & short video, runs in your browser | Blob</title>
+<meta name="description" content="Drop a GIF, a still image (PNG, JPG or WebP), an animated WebP or a short MP4/WebM video (up to 60 seconds) and get the subject back with the background cut clean: transparent PNG, transparent GIF, PNG sequence or alpha WebM. Batch several files at once and bake in a sticker effect. 100% in your browser — no uploads, no watermark, no sign-up.">
 <link rel="canonical" href="https://blob.blob16exe.workers.dev/snipgif/">
-<meta property="og:title" content="SnipGIF — free GIF background remover">
-<meta property="og:description" content="Cut the background out of a GIF right in your browser. No uploads, no watermark, no sign-up.">
+<meta property="og:title" content="SnipGIF — free background remover for GIFs, images & short video">
+<meta property="og:description" content="Cut the background out of a GIF, a photo or a short video right in your browser. No uploads, no watermark, no sign-up.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://blob.blob16exe.workers.dev/snipgif/">
 <link rel="stylesheet" href="https://blob.blob16exe.workers.dev/assets/css/style.css">
@@ -23,7 +23,7 @@
   "name": "SnipGIF",
   "applicationCategory": "MultimediaApplication",
   "operatingSystem": "Any (web browser)",
-  "description": "Free GIF background remover that runs 100% in the browser: drop a GIF, animated WebP or short MP4 — or batch several at once — and export a transparent GIF, PNG sequence or alpha WebM, with an optional sticker effect baked in. No uploads, no watermark, no sign-up.",
+  "description": "Free background remover that runs 100% in the browser: drop a GIF, a still image (PNG/JPG/WebP), an animated WebP or a short MP4/WebM video (up to 60 seconds) — or batch several at once — and export a transparent PNG, transparent GIF, PNG sequence or alpha WebM, with an optional sticker effect baked in. No uploads, no watermark, no sign-up.",
   "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
   "author": { "@type": "Organization", "name": "Blob", "url": "https://blob.blob16exe.workers.dev/" }
 }
@@ -56,14 +56,14 @@
 
 <section class="sg-hero">
   <h1 class="sg-title">SNIPGIF</h1>
-  <p class="sg-tagline">GIF BACKGROUND REMOVER — FREE, IN YOUR BROWSER</p>
+  <p class="sg-tagline">BACKGROUND REMOVER FOR GIFS, IMAGES &amp; SHORT VIDEO — FREE, IN YOUR BROWSER</p>
 </section>
 
-<div id="dropzone" class="sg-drop" tabindex="0" role="button" aria-label="Drop a GIF, animated WebP or MP4 file here, or press Enter to browse">
-  <p class="sg-drop-big">DROP GIF / WEBP / MP4 HERE — ONE OR MANY</p>
-  <p class="sg-drop-sub">or click to browse — add as many files as you like, max ~15 seconds each</p>
+<div id="dropzone" class="sg-drop" tabindex="0" role="button" aria-label="Drop a GIF, image, animated WebP or video file here, or press Enter to browse">
+  <p class="sg-drop-big">DROP GIF / IMAGE / VIDEO HERE — ONE OR MANY</p>
+  <p class="sg-drop-sub">or click to browse — still images (PNG / JPG / WebP), GIFs &amp; animated WebP up to ~15 seconds, MP4 / WebM video up to 60 seconds</p>
   <p class="sg-drop-note">Your files never leave your device.</p>
-  <input type="file" id="file-input" accept="image/gif,image/webp,video/mp4,.gif,.webp,.mp4" multiple hidden>
+  <input type="file" id="file-input" accept="image/gif,image/webp,image/png,image/jpeg,video/mp4,video/webm,.gif,.webp,.png,.jpg,.jpeg,.mp4,.webm" multiple hidden>
 </div>
 <p id="file-info" class="sg-fileinfo" hidden></p>
 <p id="error-box" class="sg-error" role="alert" hidden></p>
@@ -94,6 +94,24 @@
   </label>
 </div>
 
+<div class="sg-controls">
+  <label class="sg-field">VIDEO SIZE:
+    <select id="vres-select" class="sg-select">
+      <option value="orig" selected>ORIGINAL</option>
+      <option value="720">MAX 720P</option>
+      <option value="480">MAX 480P</option>
+    </select>
+  </label>
+  <label class="sg-field">VIDEO FPS:
+    <select id="vfps-select" class="sg-select">
+      <option value="auto" selected>AUTO</option>
+      <option value="15">15 FPS</option>
+      <option value="10">10 FPS</option>
+    </select>
+  </label>
+  <span class="sg-field">Video files only — a smaller size or fewer frames per second cuts long clips much faster.</span>
+</div>
+
 <div class="sg-fx">
   <div class="sg-fx-row" role="radiogroup" aria-label="Sticker effect">
     <span class="sg-field">STICKER EFFECT:</span>
@@ -110,12 +128,13 @@
 </div>
 
 <button type="button" id="process-btn" class="btn btn-primary sg-process" disabled>REMOVE BACKGROUND</button>
-<p class="sg-process-note">First run downloads a ~176 MB AI model — one time only, then it stays cached in your browser. DARK SCENE mode (ISNet) runs much slower than the others. Queued files share a single model load, so a batch does not pay the download per file.</p>
+<p class="sg-process-note">First run downloads a ~176 MB AI model — one time only, then it stays cached in your browser. DARK SCENE mode (ISNet) runs much slower than the others. Queued files share a single model load, so a batch does not pay the download per file. Still images are cut as a single frame and download as one transparent PNG. Videos up to 60 seconds are sampled at up to 300 frames — a long clip takes a while, and the CANCEL button stops between frames while keeping the files already finished.</p>
 
 <div id="progress-wrap" class="sg-progress-wrap" hidden>
   <p id="progress-text" class="sg-progress-text">Processing... frame 0 / 0</p>
   <div class="sg-progress"><div id="progress-bar" class="sg-progress-bar"></div></div>
   <p id="model-status" class="sg-model-status"></p>
+  <button type="button" id="cancel-btn" class="sg-chip">CANCEL</button>
 </div>
 
 <div id="preview-wrap" class="sg-preview" hidden>
@@ -134,6 +153,7 @@
 </p>
 
 <div id="download-row" class="sg-downloads" hidden>
+  <button type="button" id="download-png-single" class="btn btn-ghost" style="display:none">DOWNLOAD PNG (TRANSPARENT)</button>
   <button type="button" id="download-gif" class="btn btn-ghost">DOWNLOAD GIF (TRANSPARENT)</button>
   <button type="button" id="download-png" class="btn btn-ghost">DOWNLOAD PNG SEQUENCE (.ZIP)</button>
   <button type="button" id="download-webm" class="btn btn-ghost">DOWNLOAD WEBM (ALPHA)</button>
@@ -147,18 +167,34 @@
 <section class="card sg-story" id="how-to">
   <h3 style="margin-top:0">How to use</h3>
   <ol class="sg-howto">
-    <li><strong>Drop your files.</strong> Drag in a GIF, animated WebP or short MP4 — or several at once to batch them (up to 5 files, ~15 seconds each). They appear in the batch queue; a file that cannot be read is flagged there and the rest still process. Nothing is uploaded: everything runs on your device.</li>
+    <li><strong>Drop your files.</strong> Drag in a GIF, an animated WebP, a still image (PNG, JPG or WebP) or a video (MP4 or WebM, up to 60 seconds) — or several at once to batch them (up to 5 files). They appear in the batch queue; a file that cannot be read is flagged there and the rest still process. Nothing is uploaded: everything runs on your device.</li>
     <li><strong>Pick a mode.</strong> AUTO chooses the model for you. PERSON + PROPS keeps objects held in hands; DARK SCENE handles dark footage but runs much slower.</li>
+    <li><strong>Cutting a photo?</strong> A still image is processed as a single frame — no settings to change. It downloads as one transparent PNG, ready to drop into any design or video edit.</li>
+    <li><strong>Cutting a video?</strong> VIDEO SIZE and VIDEO FPS control how much work your machine does: the original size at AUTO fps is the full-quality default, while MAX 480P at 10 FPS cuts a long clip far faster. Videos are sampled at up to 300 frames; the export keeps the clip's real duration.</li>
     <li><strong>Optional: add a sticker effect.</strong> WOBBLE, SHAKE or BOUNCE, with an intensity slider. The preview plays with the effect on, and the effect is baked into every export — what you see is exactly what you download.</li>
-    <li><strong>Hit REMOVE BACKGROUND.</strong> The first run downloads the AI model once (~176 MB) and keeps it cached in your browser; a whole batch shares that single download. Then each file is cut frame by frame on your own machine.</li>
-    <li><strong>Check the cut.</strong> The AFTER panel shows the character on a checkerboard — the classic transparency backdrop — so you can see exactly what is see-through. Prefer the old view? Switch PREVIEW to BLACK.</li>
-    <li><strong>Download.</strong> Take a transparent GIF (drops straight into chats, pages and most editors), a PNG sequence (cleanest edges, works everywhere), or an alpha WebM (smallest file, best for video overlays). With two or more finished files, DOWNLOAD ALL packs them into one .zip, each in its own folder.</li>
+    <li><strong>Hit REMOVE BACKGROUND.</strong> The first run downloads the AI model once (~176 MB) and keeps it cached in your browser; a whole batch shares that single download. Then each file is cut frame by frame on your own machine, with a live percentage per file. Changed your mind mid-run? CANCEL stops between frames — finished files keep their cutouts, the file being cut goes back to the queue.</li>
+    <li><strong>Check the cut.</strong> The AFTER panel shows the subject on a checkerboard — the classic transparency backdrop — so you can see exactly what is see-through. Prefer the old view? Switch PREVIEW to BLACK.</li>
+    <li><strong>Download.</strong> A still image comes back as a single transparent PNG. Animations and videos: take a transparent GIF (drops straight into chats, pages and most editors), a PNG sequence (cleanest edges, works everywhere), or an alpha WebM (smallest file, best for video overlays). With two or more finished files, DOWNLOAD ALL packs them into one .zip, each in its own folder.</li>
   </ol>
 </section>
 
 <section class="card sg-story" id="story">
-  <h3 style="margin-top:0">The story</h3>
+  <h3 style="margin-top:0">About SnipGIF</h3>
   <p>SnipGIF exists because this channel's videos needed characters with their backgrounds cut clean — every cutout character in our Shorts comes from this page. The big hosted removers cap free clips at a few seconds, stamp a watermark, and only let you do one clip at a time. SnipGIF runs the same open-source AI models they use — u2net and ISNet, the models behind the open-source rembg project — entirely in your browser instead: no upload, no watermark, no account, and the mode picker lets you force the model that keeps props in hands or handles dark scenes.</p>
+  <h4>What you get back</h4>
+  <p>Drop in a GIF, an animated WebP, a still image (PNG, JPG or WebP), or a video (MP4 or WebM, up to 60 seconds) and get the subject back with the background cut clean, frame by frame — like a rotoscope. A still image is cut as a single frame and comes back as one transparent PNG. Animations and videos export as a transparent GIF (the default — drops straight into chats, pages and most editors), a PNG sequence in a ZIP (cleanest edges, works everywhere), or an alpha WebM (smallest file, best for video overlays). Queue up to 5 files as a batch and they share one model download, one queue, one ZIP back. Optionally bake in a sticker effect before you export — WOBBLE, SHAKE or BOUNCE, with an intensity slider. The preview plays with the effect on, so what you see is exactly what you download.</p>
+  <h4>Two models, picked automatically</h4>
+  <p>One segmentation model is not good at every scene, so SnipGIF carries two and chooses between them. PERSON + PROPS (u2net) is for characters — the mode that keeps held objects intact: in the Short that produced the demo on this page, the character's APPROVED sign survives all 37 frames, where a human-only model would delete the sign. DARK SCENE (ISNet) is for dark footage and robots, where the first model smears the edges. AUTO, the default, inspects the middle frame's brightness and picks a side. Manual override is there for editors who already know their footage.</p>
+  <h4>Verified against the desktop pipeline</h4>
+  <p>SnipGIF is the browser port of the same pipeline this channel's videos are made with — same open-source models, same preprocessing. The output was compared frame by frame against the desktop pipeline on a real production GIF: the transparency masks agree on 99.9% of pixels. The browser version is not a toy approximation of the tool. It is the tool.</p>
+  <h4>The honest limits</h4>
+  <ul>
+    <li>The first run downloads a ~176 MB AI model — one time only, then it stays cached in your browser. On a slow connection that takes a while; afterwards it is a one-time cost.</li>
+    <li>Phones work, but a mid-range phone will chew through a 37-frame GIF slowly. A desktop browser is the intended home.</li>
+    <li>Animations (GIF, animated WebP) are capped at about 15 seconds (max 120 frames). Videos (MP4, WebM) are capped at 60 seconds and sampled at up to 300 frames, with size and fps options to trade quality for speed. Still images have no duration to cap. Frames wider than 1280 px are downscaled. This is a subject-cutting tool, not a video editor.</li>
+    <li>GIF transparency is 1-bit, so cut edges look slightly harder in a GIF than in PNG or WebM. For video overlays, the WebM or PNG sequence stays cleaner. The alpha WebM export needs a browser with WebCodecs VP9-alpha encoding (recent Chrome works).</li>
+  </ul>
+  <p>If it eats a prop, smears an edge, or refuses a file it should accept, that is a bug worth reporting — the tool gets better the same way the channel's pipeline did: one real file at a time.</p>
 </section>
 
 <p class="sg-footnotes">

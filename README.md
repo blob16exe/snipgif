@@ -1,6 +1,7 @@
-# SnipGIF — free GIF background remover, 100% in your browser
+# SnipGIF — free background remover for GIFs, images & short video, 100% in your browser
 
-Drop a GIF, an animated WebP or a short MP4 (up to ~15 seconds) and get your
+Drop a GIF, an animated WebP, a still image (PNG/JPG/WebP) or a short video
+(MP4/WebM, up to 60 seconds) and get your
 character back with the background cut clean — frame by frame, like a
 rotoscope. Export a transparent GIF, a transparent PNG sequence (`.zip`) or
 an alpha WebM. Queue up to 5 files as a batch (one model download for all
@@ -31,7 +32,7 @@ project — entirely in your browser instead:
 
 1. Open the [live page](https://blob.blob16exe.workers.dev/snipgif/) — or
    run this repo locally (below).
-2. Drop a GIF / animated WebP / short MP4 onto the page.
+2. Drop a GIF / image / animated WebP / short MP4 or WebM onto the page.
 3. Pick a mode:
    - **AUTO** — looks at the middle frame; dark scenes go to ISNet,
      everything else to u2net.
@@ -58,7 +59,8 @@ the libraries load from the jsDelivr CDN and the AI model downloads once
 ## How it works
 
 1. **Frame extraction** — GIF via gifuct-js; animated WebP via the
-   browser's ImageDecoder API with a libwebp-WASM fallback; MP4 by
+   browser's ImageDecoder API with a libwebp-WASM fallback; still images
+   (PNG/JPG) via an <img> decode into a single frame; MP4/WebM by
    seek-stepping a `<video>` element.
 2. **Per-frame segmentation** — onnxruntime-web (WASM) runs u2net
    (320×320) or ISNet (1024×1024) on every frame, replicating rembg's

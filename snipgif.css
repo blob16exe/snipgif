@@ -64,6 +64,7 @@
 }
 
 .sg-progress-wrap { margin: 1.2rem 0; }
+#cancel-btn { margin-top: .6rem; }
 .sg-progress-text { font-family: "VT323", monospace; font-size: 1.3rem; color: #fff; margin: 0 0 .45rem; }
 .sg-progress {
   height: 20px; border: 1px solid #263069; border-radius: 4px;

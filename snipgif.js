@@ -32,9 +32,15 @@
  * the scene counts as "dark" and ISNet is used; otherwise u2net (best at
  * people holding props). The chosen model is always reported in the UI.
  *
- * Limits (stated in the UI): ~15 seconds of animation, max 120 frames,
- * frames wider than 1280px are downscaled, and very long animations are
- * downscaled further to keep browser memory sane.
+ * Limits (stated in the UI): animations (GIF / animated WebP) are capped
+ * at ~15 seconds and 120 frames; still images (PNG / JPG / WebP) are cut
+ * as a single frame and exported as one transparent PNG; video files
+ * (MP4 / WebM) are capped at 60 seconds and 300 sampled frames, with
+ * user-picked resolution (original / 720p / 480p) and sampling rate
+ * (auto / 15 / 10 fps). Frames wider than 1280px are downscaled, and very
+ * long animations are downscaled further to keep browser memory sane.
+ * Processing can be cancelled between frames; a cancelled file returns
+ * to the queue with its partial output discarded.
  */
 
 "use strict";
@@ -73,8 +79,10 @@ var MODELS = {
   }
 };
 
-var MAX_DURATION_MS = 15500;   // ~15 s cap, small grace included
+var MAX_DURATION_MS = 15500;   // ~15 s cap for animations, small grace included
 var MAX_FRAMES = 120;
+var VIDEO_MAX_DURATION_MS = 60500; // 60 s cap for video files, small grace included
+var VIDEO_MAX_FRAMES = 300;        // sampled-frame budget for video files
 var MAX_WIDTH = 1280;
 var MEMORY_BUDGET = 350 * 1024 * 1024; // bytes, both frame sets (before+after)
 
@@ -98,6 +106,8 @@ var dropzone = $("dropzone"), fileInput = $("file-input"),
     queueSummary = $("queue-summary"),
     downloadGifBtn = $("download-gif"), downloadAllBtn = $("download-all"),
     fxIntensity = $("fx-intensity"), fxIntensityVal = $("fx-intensity-val");
+var cancelBtn = $("cancel-btn"), downloadPngSingleBtn = $("download-png-single"),
+    vresSelect = $("vres-select"), vfpsSelect = $("vfps-select");
 var afterLabel = document.querySelector(".sg-label-after");
 var fxChips = {
   none: $("fx-none"), wobble: $("fx-wobble"),
@@ -131,7 +141,10 @@ var state = {
   effect: "none",      // 'none' | 'wobble' | 'shake' | 'bounce'
   intensity: 5,        // 1..10
   fxCache: null,       // { item, effect, intensity, result } for export frames
-  threads: 1           // WASM threads actually in use (set in getSession)
+  threads: 1,          // WASM threads actually in use (set in getSession)
+  cancelRequested: false, // set by the CANCEL button; checked between frames
+  videoRes: "orig",    // 'orig' | '720' | '480' — video extraction height cap
+  videoFps: "auto"     // 'auto' | '15' | '10' — video sampling rate
 };
 
 function activeItem() {
@@ -157,11 +170,16 @@ function sniffType(buf, name) {
   if (b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46) return "gif"; // GIF8
   if (b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 &&
       b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50) return "webp";
+  if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4E && b[3] === 0x47) return "png"; // PNG
+  if (b[0] === 0xFF && b[1] === 0xD8 && b[2] === 0xFF) return "jpeg"; // JPEG SOI
+  if (b[0] === 0x1A && b[1] === 0x45 && b[2] === 0xDF && b[3] === 0xA3) return "video"; // EBML (WebM)
   var s = "";
   for (var i = 4; i < 8; i++) s += String.fromCharCode(b[i]);
-  if (s === "ftyp") return "mp4";
+  if (s === "ftyp") return "video";
   var ext = (name.split(".").pop() || "").toLowerCase();
-  if (ext === "gif" || ext === "webp" || ext === "mp4") return ext;
+  if (ext === "gif" || ext === "webp" || ext === "png") return ext;
+  if (ext === "jpg" || ext === "jpeg") return "jpeg";
+  if (ext === "mp4" || ext === "webm" || ext === "mov") return "video";
   return null;
 }
 
@@ -313,7 +331,45 @@ async function extractWebpViaImageDecoder(buf) {
   }
 }
 
-function extractMp4(file) {
+/* Still image (PNG / JPG): decoded through an <img> element into a single
+ * frame. Its cutout is exported as one transparent PNG (see Downloads). */
+function extractImage(file) {
+  return new Promise(function (resolve, reject) {
+    var url = URL.createObjectURL(file);
+    var img = new Image();
+    var done = false;
+    var timer = setTimeout(function () { fail("Timed out reading this image — the file may be damaged."); }, 15000);
+    function fail(msg) {
+      if (done) return; done = true; clearTimeout(timer);
+      URL.revokeObjectURL(url); reject(new Error(msg));
+    }
+    img.addEventListener("error", function () { fail("Could not read this image file."); });
+    img.addEventListener("load", function () {
+      if (done) return;
+      try {
+        clearTimeout(timer);
+        var canvas = document.createElement("canvas");
+        canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
+        if (!canvas.width || !canvas.height) { fail("This image has no readable size."); return; }
+        var ctx = canvas.getContext("2d", { willReadFrequently: true });
+        ctx.drawImage(img, 0, 0);
+        var frames = [{ imageData: ctx.getImageData(0, 0, canvas.width, canvas.height), delayMs: 100 }];
+        done = true;
+        URL.revokeObjectURL(url);
+        resolve(frames);
+      } catch (e) { fail(e.message || "Image decoding failed."); }
+    });
+    img.src = url;
+  });
+}
+
+/* Video (MP4 / WebM): seek-stepping at a user-picked sampling rate and
+ * optional height cap. 60 s cap, 300 sampled frames max — the frame
+ * budget is what keeps browser memory and processing time survivable. */
+function extractMp4(file, opts) {
+  opts = opts || {};
+  var fps = opts.fps || 15;
+  var maxH = opts.maxH || 0; // 0 = native height
   return new Promise(function (resolve, reject) {
     var url = URL.createObjectURL(file);
     var video = document.createElement("video");
@@ -321,38 +377,40 @@ function extractMp4(file) {
     video.src = url;
     var done = false;
     function fail(msg) { if (!done) { done = true; URL.revokeObjectURL(url); reject(new Error(msg)); } }
-    video.addEventListener("error", function () { fail("Could not read this MP4 file."); });
+    video.addEventListener("error", function () { fail("Could not read this video file."); });
     // A damaged or half-downloaded file can leave the video element silent
     // forever — neither metadata nor an error event. Do not hang the UI.
-    var metaTimer = setTimeout(function () { fail("Timed out waiting for this MP4's metadata — the file may be damaged."); }, 15000);
+    var metaTimer = setTimeout(function () { fail("Timed out waiting for this video's metadata — the file may be damaged."); }, 15000);
     video.addEventListener("loadedmetadata", async function () {
       clearTimeout(metaTimer);
       if (done) return;
       try {
         var duration = video.duration;
-        if (!isFinite(duration) || duration <= 0) { fail("Could not read this MP4's duration."); return; }
-        if (duration * 1000 > MAX_DURATION_MS) {
-          fail("This clip is " + duration.toFixed(1) + "s — SnipGIF caps input at ~15 seconds. Trim it and try again.");
+        if (!isFinite(duration) || duration <= 0) { fail("Could not read this video's duration."); return; }
+        if (duration * 1000 > VIDEO_MAX_DURATION_MS) {
+          fail("This video is " + duration.toFixed(1) + "s — SnipGIF caps video input at 60 seconds. Trim it and try again.");
           return;
         }
-        var count = Math.min(MAX_FRAMES, Math.max(1, Math.round(duration * 15)));
+        var count = Math.min(VIDEO_MAX_FRAMES, Math.max(1, Math.round(duration * fps)));
         var step = duration / count;
+        var vw = video.videoWidth, vh = video.videoHeight;
+        if (maxH && vh > maxH) { vw = Math.max(2, Math.round(vw * maxH / vh)); vh = maxH; }
         var canvas = document.createElement("canvas");
-        canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+        canvas.width = vw; canvas.height = vh;
         var ctx = canvas.getContext("2d", { willReadFrequently: true });
         var frames = [];
         for (var i = 0; i < count; i++) {
           await seekTo(video, Math.min(i * step, duration - 0.01));
-          ctx.drawImage(video, 0, 0);
+          ctx.drawImage(video, 0, 0, vw, vh);
           frames.push({
-            imageData: ctx.getImageData(0, 0, canvas.width, canvas.height),
+            imageData: ctx.getImageData(0, 0, vw, vh),
             delayMs: Math.round(step * 1000)
           });
         }
         done = true;
         URL.revokeObjectURL(url);
         resolve(frames);
-      } catch (e) { fail(e.message || "MP4 decoding failed."); }
+      } catch (e) { fail(e.message || "Video decoding failed."); }
     });
   });
 }
@@ -362,7 +420,7 @@ function seekTo(video, t) {
     // the first frame): some browsers fire no 'seeked' event for a no-op
     // seek, which would otherwise stall until the timeout below.
     if (video.readyState >= 2 && Math.abs(video.currentTime - t) < 0.002) { resolve(); return; }
-    var timer = setTimeout(function () { reject(new Error("Timed out while reading the MP4.")); }, 8000);
+    var timer = setTimeout(function () { reject(new Error("Timed out while reading the video.")); }, 8000);
     function onSeeked() {
       clearTimeout(timer);
       video.removeEventListener("seeked", onSeeked);
@@ -414,17 +472,28 @@ function scaleFrames(frames, scale) {
 async function readItemFrames(item, file) {
   var buf = await file.arrayBuffer();
   var type = sniffType(buf, file.name);
-  if (!type) throw new Error("Not a GIF, animated WebP or MP4.");
+  if (!type) throw new Error("Not a GIF, image, animated WebP or video file.");
+  item.type = type;
   var frames;
   if (type === "gif") frames = await extractGif(buf);
   else if (type === "webp") frames = await extractWebp(file);
-  else frames = await extractMp4(file);
+  else if (type === "png" || type === "jpeg") frames = await extractImage(file);
+  else {
+    var fps = state.videoFps === "auto" ? 15 : Number(state.videoFps);
+    var maxH = state.videoRes === "720" ? 720 : state.videoRes === "480" ? 480 : 0;
+    frames = await extractMp4(file, { fps: fps, maxH: maxH });
+  }
+  // A still image (or a 1-frame WebP) is a picture, not an animation: it
+  // exports as a single transparent PNG instead of an animation format.
+  item.kind = (type === "png" || type === "jpeg" || (type === "webp" && frames.length === 1))
+    ? "image" : (type === "video" ? "video" : "anim");
 
   var totalMs = frames.reduce(function (s, f) { return s + f.delayMs; }, 0);
-  if (totalMs > MAX_DURATION_MS) {
-    throw new Error("Runs " + (totalMs / 1000).toFixed(1) + "s — over the ~15s cap.");
+  var capMs = type === "video" ? VIDEO_MAX_DURATION_MS : MAX_DURATION_MS;
+  if (totalMs > capMs && item.kind !== "image") {
+    throw new Error("Runs " + (totalMs / 1000).toFixed(1) + "s — over the " + (type === "video" ? "60s" : "~15s") + " cap.");
   }
-  frames = capFrames(frames);
+  if (item.kind !== "video") frames = capFrames(frames);
 
   // Memory/size guards: max width, then a total-memory budget.
   var w = frames[0].imageData.width, h = frames[0].imageData.height;
@@ -488,6 +557,7 @@ function renderQueue() {
     var meta = "";
     if (it.status === "reading") meta = "reading...";
     else if (it.status === "error") meta = it.error || "Could not read this file.";
+    else if (it.kind === "image") meta = "image · " + it.width + "×" + it.height;
     else meta = it.frameCount + " frames · " + it.width + "×" + it.height;
     var statusHtml = "", statusCls = "sg-qstatus";
     if (it.status === "done") { statusHtml = "&#10003; DONE"; statusCls += " sg-done"; }
@@ -538,8 +608,10 @@ function updateFileInfo() {
   if (state.queue.length === 1) {
     var it = state.queue[0];
     if (it.status === "queued" || it.status === "done") {
-      fileInfo.textContent = it.name + " — " + it.frameCount + " frames, " + it.width + "×" + it.height +
-        ", " + (it.totalMs / 1000).toFixed(1) + "s. Pick a mode and hit REMOVE BACKGROUND.";
+      fileInfo.textContent = it.kind === "image"
+        ? it.name + " — image, " + it.width + "×" + it.height + ". Pick a mode and hit REMOVE BACKGROUND."
+        : it.name + " — " + it.frameCount + " frames, " + it.width + "×" + it.height +
+          ", " + (it.totalMs / 1000).toFixed(1) + "s. Pick a mode and hit REMOVE BACKGROUND.";
       return;
     }
     if (it.status === "reading") { fileInfo.textContent = "Reading " + it.name + " ..."; return; }
@@ -608,6 +680,7 @@ async function addFiles(fileList) {
       name: file.name,
       baseName: (file.name.replace(/\.[^.]+$/, "") || "snipgif").replace(/[^a-z0-9-_]+/gi, "-"),
       status: "reading", error: "", progress: 0,
+      type: "", kind: "anim",
       frames: null, firstFrame: null, delays: [], frameCount: 0,
       width: 0, height: 0, totalMs: 0,
       outputs: null, cumMs: null, totalOutMs: 0, thumb: ""
@@ -849,6 +922,9 @@ async function processAll() {
   var pending = state.queue.filter(function (it) { return it.status === "queued"; });
   if (!pending.length || state.busy) return;
   state.busy = true;
+  state.cancelRequested = false;
+  cancelBtn.disabled = false;
+  cancelBtn.textContent = "CANCEL";
   updateProcessBtn();
   showError("");
   downloadRow.hidden = true;
@@ -874,16 +950,25 @@ async function processAll() {
       var outputs = [];
       var n = item.frames.length;
       for (var i = 0; i < n; i++) {
+        var pct = Math.round(i / n * 100);
         var label = (pending.length > 1 ? "Processing file " + (qi + 1) + " of " + pending.length + " — frame " : "Processing... frame ") +
-          i + " / " + n + (state.threads > 1 ? " · " + state.threads + " threads" : "");
+          i + " / " + n + " · " + pct + "%" + (state.threads > 1 ? " · " + state.threads + " threads" : "");
         setProgress((qi + i / n) / pending.length, label);
-        item.progress = Math.round(i / n * 100);
+        item.progress = pct;
         if (i % 4 === 0) renderQueue();
         outputs.push({
           imageData: await predictMask(session, item.frames[i].imageData, model),
           delayMs: item.frames[i].delayMs
         });
         await yieldToUI();
+        if (state.cancelRequested) break;
+      }
+      if (state.cancelRequested) {
+        item.status = "queued";
+        item.progress = 0;
+        item.outputs = null;
+        renderQueue();
+        break;
       }
       item.outputs = outputs;
       computeCum(item);
@@ -893,9 +978,14 @@ async function processAll() {
       renderQueue();
       maybeFreeFrames();
     }
-    setProgress(1, pending.length > 1 ? "Done — " + pending.length + " files cut." : "Done — " + pending[0].frameCount + " frames cut.");
-    modelStatus.textContent = "Model used: " + lastModelLabel + ". Nothing was uploaded.";
-    setActive(pending[pending.length - 1], true);
+    if (state.cancelRequested) {
+      setProgress(0, "Cancelled — the unfinished file is back in the queue; finished files keep their cutouts.");
+      modelStatus.textContent = "";
+    } else {
+      setProgress(1, pending.length > 1 ? "Done — " + pending.length + " files cut." : "Done — " + pending[0].frameCount + " frames cut.");
+      modelStatus.textContent = "Model used: " + lastModelLabel + ". Nothing was uploaded.";
+      setActive(pending[pending.length - 1], true);
+    }
   } catch (e) {
     state.queue.forEach(function (it) { if (it.status === "processing") it.status = "queued"; });
     renderQueue();
@@ -910,8 +1000,19 @@ function showResults() {
   var item = activeItem();
   if (!item || !item.outputs || !item.outputs.length) return;
   previewWrap.hidden = false;
-  playbackRow.hidden = false;
+  playbackRow.hidden = item.kind === "image";
   downloadRow.hidden = false;
+  var isImage = item.kind === "image";
+  // style.display, not the hidden attribute: the site's .btn CSS sets its
+  // own display value, which overrides the UA [hidden] rule — the buttons
+  // would stay visible. (The row-level [hidden] rules in snipgif.css only
+  // cover the wrap elements, not these buttons.)
+  downloadPngSingleBtn.style.display = isImage ? "" : "none";
+  downloadGifBtn.style.display = isImage ? "none" : "";
+  downloadWebmBtn.style.display = isImage ? "none" : "";
+  downloadPngBtn.style.display = isImage ? "none" : "";
+  var gifNote = $("gif-note");
+  if (gifNote) gifNote.style.display = isImage ? "none" : "";
   beforeCanvas.width = item.width; beforeCanvas.height = item.height;
   var dims = exportDimsFor(item);
   afterCanvas.width = dims.w; afterCanvas.height = dims.h;
@@ -1119,6 +1220,24 @@ downloadPngBtn.addEventListener("click", async function () {
   downloadPngBtn.disabled = false;
 });
 
+/* Still image: one transparent PNG, no ZIP. The sticker effect (if any)
+ * is baked in through the same export path as every other format. */
+downloadPngSingleBtn.addEventListener("click", async function () {
+  var item = activeItem();
+  if (!item || !item.outputs || !item.outputs.length) return;
+  downloadPngSingleBtn.disabled = true;
+  downloadStatus.textContent = "Building the PNG...";
+  try {
+    var exp = getExportFrames(item);
+    var blob = await frameToPngBlob(exp.frames[0].imageData);
+    downloadBlob(blob, item.baseName + "-cutout.png");
+    downloadStatus.textContent = "PNG downloaded — transparent, " + exp.width + "×" + exp.height + ".";
+  } catch (e) {
+    downloadStatus.textContent = "PNG failed: " + (e.message || e);
+  }
+  downloadPngSingleBtn.disabled = false;
+});
+
 /* Transparent GIF: gifenc (MIT) encodes in the browser. GIF alpha is
  * 1-bit, so the model's soft alpha is snapped at 128 first — pixels below
  * become fully transparent (RGB zeroed, so no colour fringe survives),
@@ -1313,6 +1432,14 @@ fileInput.addEventListener("change", function () {
   fileInput.value = "";
 });
 processBtn.addEventListener("click", processAll);
+cancelBtn.addEventListener("click", function () {
+  if (!state.busy) return;
+  state.cancelRequested = true;
+  cancelBtn.disabled = true;
+  cancelBtn.textContent = "CANCELLING...";
+});
+vresSelect.addEventListener("change", function () { state.videoRes = vresSelect.value; });
+vfpsSelect.addEventListener("change", function () { state.videoFps = vfpsSelect.value; });
 
 function syncPreviewBackdrop() {
   var checker = previewSelect.value === "checker";
